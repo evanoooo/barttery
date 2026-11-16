@@ -14,6 +14,7 @@ enum WidgetDeviceSelectionMode: String, Codable, CaseIterable {
 
 extension Notification.Name {
     static let widgetSettingsChanged = Notification.Name("widgetSettingsChanged")
+    static let userInitiatedRefresh = Notification.Name("userInitiatedRefresh")
 }
 
 struct DeviceNotificationRules: Codable, Equatable {

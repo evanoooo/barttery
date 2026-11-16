@@ -93,3 +93,7 @@
 "widget.device_watch" = "Apple Watch";
 "widget.device_pad" = "iPad";
 "widget.device_accessories" = "其他蓝牙外设";
+"widget.refresh_hint_title" = "立即刷新小组件";
+"widget.refresh_hint_desc" = "修改设置后立即写入快照并请求 WidgetKit 刷新桌面小组件。";
+"widget.refresh_now" = "立即刷新";
+"widget.refreshed" = "已刷新";

@@ -350,6 +350,7 @@ struct SettingsView: View {
 
 struct WidgetSettingsView: View {
     @ObservedObject var settings: AppSettings
+    @State private var isRefreshed = false
 
     var body: some View {
         ScrollView {
@@ -426,6 +427,37 @@ struct WidgetSettingsView: View {
                         )
                     }
                 }
+
+                // Manual Refresh / Sync Action
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L10n.tr("widget.refresh_hint_title"))
+                            .font(.system(size: 12, weight: .medium))
+                        Text(L10n.tr("widget.refresh_hint_desc"))
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        settings.notifyWidgetSettingsChanged()
+                        isRefreshed = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            isRefreshed = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: isRefreshed ? "checkmark" : "arrow.clockwise")
+                            Text(isRefreshed ? L10n.tr("widget.refreshed") : L10n.tr("widget.refresh_now"))
+                        }
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(14)
+                .background(Color.secondary.opacity(0.04))
+                .cornerRadius(10)
 
                 Spacer(minLength: 20)
             }

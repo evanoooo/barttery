@@ -93,3 +93,7 @@
 "widget.device_watch" = "Apple Watch";
 "widget.device_pad" = "iPad";
 "widget.device_accessories" = "Bluetooth Accessories";
+"widget.refresh_hint_title" = "Refresh Widgets";
+"widget.refresh_hint_desc" = "Immediately write snapshot and request WidgetKit to reload desktop widgets.";
+"widget.refresh_now" = "Refresh Now";
+"widget.refreshed" = "Refreshed";

@@ -197,7 +197,7 @@ enum WidgetSnapshotStore {
         let targets = (url == fileURL) ? candidateURLs() : [url]
         let decoder = JSONDecoder()
 
-        var bestSnapshot: WidgetBatterySnapshot = .empty
+        var newestSnapshot: WidgetBatterySnapshot?
 
         for targetURL in targets {
             var fileData: Data? = try? Data(contentsOf: targetURL)
@@ -222,16 +222,17 @@ enum WidgetSnapshotStore {
 
             if let data = fileData,
                let snapshot = try? decoder.decode(WidgetBatterySnapshot.self, from: data) {
-                if !snapshot.devices.isEmpty {
-                    return snapshot
-                }
-                if bestSnapshot.devices.isEmpty {
-                    bestSnapshot = snapshot
+                if let current = newestSnapshot {
+                    if snapshot.writtenAt > current.writtenAt {
+                        newestSnapshot = snapshot
+                    }
+                } else {
+                    newestSnapshot = snapshot
                 }
             }
         }
 
-        return bestSnapshot
+        return newestSnapshot ?? .empty
     }
 
     static var lastFopenErrno: Int32 = 0

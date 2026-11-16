@@ -405,7 +405,7 @@ struct RefreshButton: View {
         Button {
             guard !monitor.isRefreshing else { return }
             monitor.refresh(userInitiated: true)
-            WidgetSnapshotPublisher.reloadAllWidgets()
+            NotificationCenter.default.post(name: .userInitiatedRefresh, object: nil)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "arrow.clockwise")

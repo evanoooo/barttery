@@ -7,6 +7,7 @@ import WidgetKit
 final class WidgetSnapshotPublisher {
     private var changes: AnyCancellable?
     private var settingsObserver: NSObjectProtocol?
+    private var refreshObserver: NSObjectProtocol?
     private var pendingReload: DispatchWorkItem?
     private var lastReload = Date.distantPast
     private var hasPublishedSnapshot = false
@@ -29,16 +30,27 @@ final class WidgetSnapshotPublisher {
         ) { [weak self, weak monitor] _ in
             guard let self, let monitor else { return }
             self.publish(monitor, force: true)
-            Self.reloadAllWidgets()
         }
 
-        publish(monitor)
+        refreshObserver = NotificationCenter.default.addObserver(
+            forName: .userInitiatedRefresh,
+            object: nil,
+            queue: .main
+        ) { [weak self, weak monitor] _ in
+            guard let self, let monitor else { return }
+            self.publish(monitor, force: true)
+        }
+
+        publish(monitor, force: true)
     }
 
     deinit {
         pendingReload?.cancel()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
+        }
+        if let refreshObserver {
+            NotificationCenter.default.removeObserver(refreshObserver)
         }
     }
 
@@ -68,8 +80,10 @@ final class WidgetSnapshotPublisher {
             try WidgetSnapshotStore.write(snapshot)
             lastWrittenDevices = snapshot.devices
             lastWrittenAt = now
-            if !hasPublishedSnapshot {
+            if !hasPublishedSnapshot || force {
                 hasPublishedSnapshot = true
+                pendingReload?.cancel()
+                pendingReload = nil
                 lastReload = now
                 Self.reloadAllWidgets()
             } else {
@@ -84,15 +98,12 @@ final class WidgetSnapshotPublisher {
     static func reloadAllWidgets() {
         guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool != false else { return }
         WidgetCenter.shared.reloadAllTimelines()
-        for layout in WidgetBatteryLayout.allCases {
-            WidgetCenter.shared.reloadTimelines(ofKind: layout.widgetKind)
-        }
     }
 
     private func requestReload() {
         guard pendingReload == nil else { return }
         // Coalesce frequent BLE updates; WidgetKit also applies its own refresh budget.
-        let delay = max(0, 5 * 60 - Date().timeIntervalSince(lastReload))
+        let delay = max(0, 30 - Date().timeIntervalSince(lastReload))
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingReload = nil
