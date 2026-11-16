@@ -300,6 +300,7 @@ private struct MiniBatteryGauge: View {
 
 private struct BatteryRing: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     let device: WidgetBatteryDevice
     let date: Date
@@ -318,6 +319,15 @@ private struct BatteryRing: View {
     }
     private var labelColor: Color {
         colorScheme == .dark ? Color.white.opacity(0.88) : Color.primary.opacity(0.85)
+    }
+
+    private var widgetIsolationColor: Color {
+        if renderingMode != .fullColor {
+            return Color.black
+        }
+        return colorScheme == .dark
+            ? Color(red: 30/255, green: 30/255, blue: 32/255)
+            : Color(red: 250/255, green: 250/255, blue: 252/255)
     }
 
     private var statusIconColor: Color {
@@ -350,12 +360,24 @@ private struct BatteryRing: View {
                     .foregroundStyle(stale ? Color.secondary : iconColor)
 
                 // 12 o'clock charging / paused indicator placed at the top of the ring
+                // With background isolation knockout to cleanly separate the icon from the progress ring
                 if let statusSymbol = device.statusSymbol {
-                    Image(systemName: statusSymbol)
-                        .font(.system(size: max(8, size * 0.19), weight: .bold))
-                        .foregroundStyle(statusIconColor)
-                        .offset(y: -size / 2)
-                        .widgetAccentable()
+                    let boltSize = max(8.5, size * 0.19)
+                    let haloSize = boltSize + lineWidth + 1.5
+
+                    ZStack {
+                        // 1. Isolation background knockout (cuts out the ring stroke)
+                        Circle()
+                            .fill(widgetIsolationColor)
+                            .frame(width: haloSize, height: haloSize)
+
+                        // 2. Status icon (bolt.fill or pause.fill)
+                        Image(systemName: statusSymbol)
+                            .font(.system(size: boltSize, weight: .bold))
+                            .foregroundStyle(statusIconColor)
+                    }
+                    .offset(y: -size / 2)
+                    .widgetAccentable()
                 }
             }
             .frame(width: size, height: size)
