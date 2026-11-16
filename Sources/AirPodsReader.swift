@@ -541,9 +541,6 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
         func uidIndex(_ v: Any?) -> Int? {
             guard let obj = v as? NSObject else { return nil }
-            // CF$UID objects respond to value(forKey:) with their numeric value
-            if let n = obj.value(forKey: "CF$UID") as? Int { return n }
-            // Fallback: parse description string "{ value = N }" for older OS
             let desc = obj.description
             guard let s = desc.range(of: "{value = "),
                   let e = desc.range(of: "}", range: s.upperBound..<desc.endIndex)

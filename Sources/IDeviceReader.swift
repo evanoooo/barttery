@@ -31,12 +31,6 @@ class IDeviceReader: NSObject {
     private var phoneUDID: String?
     private var lastBartbeatOutput: Date?
     private var lastBartbeatRestart: Date?
-    // Generation counters: each launch increments the counter; terminationHandlers
-    // capture the generation at launch time and only reschedule if it still matches,
-    // preventing restartBartbeat() from racing with an in-flight terminationHandler.
-    private var bartbeatGeneration: UInt = 0
-    private var mobilebeatGeneration: UInt = 0
-    private var wifiwatchGeneration: UInt = 0
     // In-memory cache of the last successful sync times (avoids UserDefaults reads in checkStale).
     private var phoneSyncTime: Date?
     private var padSyncTime: Date?
@@ -188,20 +182,15 @@ class IDeviceReader: NSObject {
         // blocks its writer thread — an unread pipe is a classic way to wedge it.
         attachStderrDrain(to: errPipe)
 
-        // Capture the current generation so this handler can tell whether
-        // restartBartbeat() superseded it before the 5 s delay fires.
-        bartbeatGeneration &+= 1
-        let gen = bartbeatGeneration
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                // Only relaunch if restartBartbeat() has not already taken over
-                // (which increments bartbeatGeneration and sets bartbeat = nil).
-                guard self.bartbeatGeneration == gen else { return }
-                self.launchBartbeat()
+                if self.bartbeat == nil || self.bartbeat === proc {
+                    self.launchBartbeat()
+                }
             }
         }
 
@@ -234,16 +223,15 @@ class IDeviceReader: NSObject {
         }
         attachStderrDrain(to: errPipe)
 
-        mobilebeatGeneration &+= 1
-        let mobilegen = mobilebeatGeneration
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                guard self.mobilebeatGeneration == mobilegen else { return }
-                self.launchMobilebeat()
+                if self.mobilebeat == nil || self.mobilebeat === proc {
+                    self.launchMobilebeat()
+                }
             }
         }
         do {
@@ -285,16 +273,15 @@ class IDeviceReader: NSObject {
         }
         attachStderrDrain(to: errPipe)
 
-        wifiwatchGeneration &+= 1
-        let wifigen = wifiwatchGeneration
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                guard self.wifiwatchGeneration == wifigen else { return }
-                self.launchWifiwatch()
+                if self.wifiwatch == nil || self.wifiwatch === proc {
+                    self.launchWifiwatch()
+                }
             }
         }
 
@@ -465,8 +452,6 @@ class IDeviceReader: NSObject {
         if let last = lastBartbeatRestart, Date().timeIntervalSince(last) < cooldown { return }
         lastBartbeatRestart = Date()
         lastBartbeatOutput  = Date()  // reset so we don't loop immediately
-        // Increment generation so any pending terminationHandler doesn't double-relaunch
-        bartbeatGeneration &+= 1
         // Prefer SIGKILL: a wedged bartbeat can ignore SIGTERM and stay alive for hours.
         if let proc = bartbeat, proc.isRunning {
             kill(proc.processIdentifier, SIGKILL)

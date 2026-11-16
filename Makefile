@@ -48,7 +48,8 @@ run: build
 	open $(BUNDLE)
 
 install: build
-	@killall Barttery 2>/dev/null || true
+	@killall Barttery mobilebeat wifiwatch comptest 2>/dev/null || true
+	@sleep 1
 	rm -rf /Applications/$(BUNDLE)
 	ditto $(BUNDLE) /Applications/$(BUNDLE)
 	xattr -dr com.apple.quarantine /Applications/$(BUNDLE) 2>/dev/null || true
@@ -59,7 +60,7 @@ install: build
 	@killall chronod 2>/dev/null || true
 	@killall NotificationCenter 2>/dev/null || true
 	@echo "=> Installed to /Applications/$(BUNDLE)"
-	@open /Applications/$(BUNDLE)
+	@open -a /Applications/$(BUNDLE)
 
 # Public, non-widget release. Never replace Developer ID signatures with ad-hoc ones.
 dmg:
