@@ -300,7 +300,6 @@ private struct MiniBatteryGauge: View {
 
 private struct BatteryRing: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.widgetRenderingMode) private var renderingMode
 
     let device: WidgetBatteryDevice
     let date: Date
@@ -321,15 +320,6 @@ private struct BatteryRing: View {
         colorScheme == .dark ? Color.white.opacity(0.88) : Color.primary.opacity(0.85)
     }
 
-    private var widgetIsolationColor: Color {
-        if renderingMode != .fullColor {
-            return Color.black
-        }
-        return colorScheme == .dark
-            ? Color(red: 30/255, green: 30/255, blue: 32/255)
-            : Color(red: 250/255, green: 250/255, blue: 252/255)
-    }
-
     private var statusIconColor: Color {
         if stale { return .secondary }
         if device.isPaused { return tint }
@@ -346,13 +336,43 @@ private struct BatteryRing: View {
     var body: some View {
         VStack(spacing: single ? 11 : 10) {
             ZStack {
-                Circle()
-                    .stroke(trackColor, lineWidth: lineWidth)
-                Circle()
-                    .trim(from: 0, to: CGFloat(min(100, max(0, device.level))) / 100)
-                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .widgetAccentable()
+                // Ring strokes (background track and battery level progress)
+                // When charging or paused, the top region hugs the exact silhouette of the status glyph
+                // via a tight 1.8pt destinationOut mask cutout, matching the native iOS Batteries widget.
+                ZStack {
+                    Circle()
+                        .stroke(trackColor, lineWidth: lineWidth)
+                    Circle()
+                        .trim(from: 0, to: CGFloat(min(100, max(0, device.level))) / 100)
+                        .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .widgetAccentable()
+                }
+                .mask {
+                    if let statusSymbol = device.statusSymbol {
+                        let boltSize = max(8.0, size * 0.17)
+                        let d: CGFloat = max(1.5, size * 0.032)
+
+                        Rectangle()
+                            .fill(Color.white)
+                            .overlay {
+                                ZStack {
+                                    ForEach([-d, 0, d], id: \.self) { dx in
+                                        ForEach([-d, 0, d], id: \.self) { dy in
+                                            Image(systemName: statusSymbol)
+                                                .font(.system(size: boltSize, weight: .bold))
+                                                .offset(x: dx, y: dy)
+                                        }
+                                    }
+                                }
+                                .offset(y: -size / 2)
+                                .blendMode(.destinationOut)
+                            }
+                            .compositingGroup()
+                    } else {
+                        Rectangle().fill(Color.white)
+                    }
+                }
 
                 Image(systemName: device.symbol)
                     .symbolRenderingMode(.hierarchical)
@@ -360,24 +380,15 @@ private struct BatteryRing: View {
                     .foregroundStyle(stale ? Color.secondary : iconColor)
 
                 // 12 o'clock charging / paused indicator placed at the top of the ring
-                // With background isolation knockout to cleanly separate the icon from the progress ring
+                // Sits seamlessly inside the cutout contour without punching any circular hole
                 if let statusSymbol = device.statusSymbol {
-                    let boltSize = max(8.5, size * 0.19)
-                    let haloSize = boltSize + lineWidth + 1.5
+                    let boltSize = max(8.0, size * 0.17)
 
-                    ZStack {
-                        // 1. Isolation background knockout (cuts out the ring stroke)
-                        Circle()
-                            .fill(widgetIsolationColor)
-                            .frame(width: haloSize, height: haloSize)
-
-                        // 2. Status icon (bolt.fill or pause.fill)
-                        Image(systemName: statusSymbol)
-                            .font(.system(size: boltSize, weight: .bold))
-                            .foregroundStyle(statusIconColor)
-                    }
-                    .offset(y: -size / 2)
-                    .widgetAccentable()
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: boltSize, weight: .bold))
+                        .foregroundStyle(statusIconColor)
+                        .offset(y: -size / 2)
+                        .widgetAccentable()
                 }
             }
             .frame(width: size, height: size)
