@@ -89,6 +89,7 @@ class AccessoryReader: NSObject {
                 self?.timer?.tolerance = 30
             }
         }
+        timer?.tolerance = 1
     }
 
     func readOnce() { read() }
@@ -115,6 +116,12 @@ class AccessoryReader: NSObject {
     }
 
     @objc private func deviceConnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        if let name = device.name {
+            guard !AirPodsReader.isAirPods(name: name, address: device.addressString) else { return }
+            let lower = name.lowercased()
+            guard !lower.contains("iphone"), !lower.contains("ipad") else { return }
+            guard AccessoryBattery.isSupportedAccessoryName(lower) else { return }
+        }
         // IOKit HID service appears asynchronously after BT connects — retry until found.
         let addr = device.addressString?.lowercased() ?? ""
         retryUntilFound(addr: addr, attempts: 10, interval: 0.5)

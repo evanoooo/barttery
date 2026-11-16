@@ -65,16 +65,17 @@ class BTHeadphonesReader: NSObject {
                     updatedAt: Date(),
                     chargingKnown: batteryInfo.chargingKnown
                 )
-                lastKnownHeadphones[name] = reading
+                // Key by address (with name fallback) to avoid collisions between same-named devices.
+                lastKnownHeadphones[key] = reading
                 result.append(reading)
-            } else if let cached = lastKnownHeadphones[name] {
+            } else if let cached = lastKnownHeadphones[key] {
                 // Device is still connected to macOS! Keep last known battery reading instead of flickering to empty
                 result.append(cached)
             }
         }
 
-        // Clean up devices that are truly no longer connected
-        lastKnownHeadphones = lastKnownHeadphones.filter { connectedNames.contains($0.key) }
+        // Clean up devices that are truly no longer connected (key is address-based, same as activeKeys)
+        lastKnownHeadphones = lastKnownHeadphones.filter { activeKeys.contains($0.key) }
         for key in disconnectNotes.keys where !activeKeys.contains(key) {
             disconnectNotes.removeValue(forKey: key)?.unregister()
         }

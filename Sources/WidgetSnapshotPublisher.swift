@@ -71,9 +71,9 @@ final class WidgetSnapshotPublisher {
         guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool != false else { return }
         let now = Date()
         let snapshot = monitor.widgetSnapshot(at: now)
-        if !force, hasPublishedSnapshot,
-           devicesContentMatches(snapshot.devices, lastWrittenDevices),
-           now.timeIntervalSince(lastWrittenAt) < 60 {
+        let contentChanged = !devicesContentMatches(snapshot.devices, lastWrittenDevices)
+        if !force, hasPublishedSnapshot, !contentChanged,
+           now.timeIntervalSince(lastWrittenAt) < 300 {
             return
         }
         do {
@@ -86,7 +86,7 @@ final class WidgetSnapshotPublisher {
                 pendingReload = nil
                 lastReload = now
                 Self.reloadAllWidgets()
-            } else {
+            } else if contentChanged {
                 requestReload()
             }
         } catch {

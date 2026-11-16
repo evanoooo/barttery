@@ -41,6 +41,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private var cachedBTDevice: IOBluetoothDevice?
     private var hasPairedAirPods = false
     private var isScanning = false
+    private var dutyActive = false
+    private var dutyGeneration = 0
     private var lastPlistModDate: Date?
     private var lastAdvByPeripheral: [UUID: (b7: UInt8, b8: UInt8, b9: UInt8, time: TimeInterval)] = [:]
     private var connectNotification: IOBluetoothUserNotification?
@@ -189,15 +191,45 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         }
     }
 
+    // Duty-cycled scanning keeps the Bluetooth radio mostly idle (≈ 8s on / 22s off).
+    // Event-driven triggers (connect, wake, popup open) start a fresh window immediately.
+    private static let scanWindow: TimeInterval = 8
+    private static let scanPause: TimeInterval = 22
+
     private func startScanningOnBLEQueue() {
-        guard let central = central, central.state == .poweredOn, !isScanning else { return }
+        guard let central = central, central.state == .poweredOn else { return }
+        dutyActive = true
+        guard !isScanning else { return }
+        dutyGeneration &+= 1  // invalidates any pending "begin window" from a pause
+        beginScanWindow(generation: dutyGeneration)
+    }
+
+    private func beginScanWindow(generation: Int) {
+        guard dutyActive, generation == dutyGeneration,
+              let central = central, central.state == .poweredOn else { return }
         isScanning = true
         central.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: true
         ])
+        bleQueue.asyncAfter(deadline: .now() + Self.scanWindow) { [weak self] in
+            self?.endScanWindow(generation: generation)
+        }
+    }
+
+    private func endScanWindow(generation: Int) {
+        guard dutyActive, generation == dutyGeneration else { return }
+        if isScanning {
+            isScanning = false
+            central?.stopScan()
+        }
+        bleQueue.asyncAfter(deadline: .now() + Self.scanPause) { [weak self] in
+            self?.beginScanWindow(generation: generation)
+        }
     }
 
     private func stopScanningOnBLEQueue() {
+        dutyActive = false
+        dutyGeneration &+= 1
         guard let central = central, isScanning else { return }
         isScanning = false
         central.stopScan()
@@ -239,6 +271,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard central.state == .poweredOn else {
             isScanning = false
+            dutyActive = false
+            dutyGeneration &+= 1
             return
         }
         startScanningOnBLEQueue()
@@ -248,8 +282,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
-        // -75 dBm: strong nearby proximity (placed right next to Mac)
-        guard RSSI.intValue > -75 else { return }
+        // -85 dBm: covers same-room proximity (desk, nightstand); -75 was too strict for non-adjacent placement
+        guard RSSI.intValue > -85 else { return }
 
         guard let mfr = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
               Self.isValidProximityPairingPacket(mfr)
@@ -415,7 +449,11 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: prefPath),
               let mod = attrs[.modificationDate] as? Date else { return }
         if Date().timeIntervalSince(mod) > staleTimeout {
-            // Only drop if older than stale timeout
+            // Plist is stale — clear cached plist levels so we don't serve old data
+            if plistLevels != nil {
+                plistLevels = nil
+                Self.logger.notice("AirPods plist stale (>4h), clearing cached levels")
+            }
             return
         }
         if !force, let lastMod = lastPlistModDate, mod == lastMod {
@@ -503,6 +541,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
         func uidIndex(_ v: Any?) -> Int? {
             guard let obj = v as? NSObject else { return nil }
+            // CF$UID objects respond to value(forKey:) with their numeric value
+            if let n = obj.value(forKey: "CF$UID") as? Int { return n }
+            // Fallback: parse description string "{ value = N }" for older OS
             let desc = obj.description
             guard let s = desc.range(of: "{value = "),
                   let e = desc.range(of: "}", range: s.upperBound..<desc.endIndex)

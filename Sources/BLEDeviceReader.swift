@@ -51,7 +51,9 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         pruneStalePeripherals()
         connectExisting()
         for (id, ch) in battChars {
-            peripherals[id]?.readValue(for: ch)
+            if let p = peripherals[id], p.state == .connected {
+                p.readValue(for: ch)
+            }
         }
     }
 
@@ -144,8 +146,9 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
                 if vendorID == 0x046D {
                     // Notify DeviceBatteryMonitor; it decides whether to suppress this BLE entry
                     // (when LogitechReader has HID++ data) or keep it (as fallback when HID++ fails).
+                    // CBCentralManager is on .main queue, so this callback is already on main.
                     let name = p.name ?? "Unknown Device"
-                    DispatchQueue.main.async { [weak self] in self?.onLogiConfirmed?(name, productID) }
+                    onLogiConfirmed?(name, productID)
                 }
             }
             return

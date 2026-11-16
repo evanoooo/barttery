@@ -31,6 +31,15 @@ class IDeviceReader: NSObject {
     private var phoneUDID: String?
     private var lastBartbeatOutput: Date?
     private var lastBartbeatRestart: Date?
+    // Generation counters: each launch increments the counter; terminationHandlers
+    // capture the generation at launch time and only reschedule if it still matches,
+    // preventing restartBartbeat() from racing with an in-flight terminationHandler.
+    private var bartbeatGeneration: UInt = 0
+    private var mobilebeatGeneration: UInt = 0
+    private var wifiwatchGeneration: UInt = 0
+    // In-memory cache of the last successful sync times (avoids UserDefaults reads in checkStale).
+    private var phoneSyncTime: Date?
+    private var padSyncTime: Date?
     private var watchChargingState = WatchChargingState(
         observation: WatchChargingObservation.cached(), lastReading: WatchBattery.cached()
     )
@@ -44,8 +53,14 @@ class IDeviceReader: NSObject {
         // Seed success timestamps from UserDefaults so the stale check works for
         // values restored from cache before any live bartbeat update arrives.
         let ud = UserDefaults.standard
-        if let t = ud.object(forKey: "phone.lastSyncTime") as? Date { lastPhoneSuccess = t }
-        if let t = ud.object(forKey: "pad.lastSyncTime") as? Date   { lastPadSuccess = t }
+        if let t = ud.object(forKey: "phone.lastSyncTime") as? Date {
+            lastPhoneSuccess = t
+            phoneSyncTime = t
+        }
+        if let t = ud.object(forKey: "pad.lastSyncTime") as? Date {
+            lastPadSuccess = t
+            padSyncTime = t
+        }
         if let t = ud.object(forKey: "watch.lastSyncTime") as? Date { lastWatchSuccess = t }
         phoneUDID = ud.string(forKey: "phone.lastUDID")
         staleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
@@ -173,15 +188,20 @@ class IDeviceReader: NSObject {
         // blocks its writer thread — an unread pipe is a classic way to wedge it.
         attachStderrDrain(to: errPipe)
 
-        proc.terminationHandler = { [weak self, weak proc] _ in
+        // Capture the current generation so this handler can tell whether
+        // restartBartbeat() superseded it before the 5 s delay fires.
+        bartbeatGeneration &+= 1
+        let gen = bartbeatGeneration
+        proc.terminationHandler = { [weak self] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                if self.bartbeat == nil || self.bartbeat === proc {
-                    self.launchBartbeat()
-                }
+                // Only relaunch if restartBartbeat() has not already taken over
+                // (which increments bartbeatGeneration and sets bartbeat = nil).
+                guard self.bartbeatGeneration == gen else { return }
+                self.launchBartbeat()
             }
         }
 
@@ -214,15 +234,16 @@ class IDeviceReader: NSObject {
         }
         attachStderrDrain(to: errPipe)
 
-        proc.terminationHandler = { [weak self, weak proc] _ in
+        mobilebeatGeneration &+= 1
+        let mobilegen = mobilebeatGeneration
+        proc.terminationHandler = { [weak self] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                if self.mobilebeat == nil || self.mobilebeat === proc {
-                    self.launchMobilebeat()
-                }
+                guard self.mobilebeatGeneration == mobilegen else { return }
+                self.launchMobilebeat()
             }
         }
         do {
@@ -264,15 +285,16 @@ class IDeviceReader: NSObject {
         }
         attachStderrDrain(to: errPipe)
 
-        proc.terminationHandler = { [weak self, weak proc] _ in
+        wifiwatchGeneration &+= 1
+        let wifigen = wifiwatchGeneration
+        proc.terminationHandler = { [weak self] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard let self, !self.isStopped else { return }
-                if self.wifiwatch == nil || self.wifiwatch === proc {
-                    self.launchWifiwatch()
-                }
+                guard self.wifiwatchGeneration == wifigen else { return }
+                self.launchWifiwatch()
             }
         }
 
@@ -316,11 +338,13 @@ class IDeviceReader: NSObject {
             let charging = json["charging"] as? Bool ?? false
             let name     = json["name"] as? String
             let udid     = json["udid"] as? String
-            lastPhoneSuccess = Date()
+            let now      = Date()
+            lastPhoneSuccess = now
             if let udid { phoneUDID = udid; UserDefaults.standard.set(udid, forKey: "phone.lastUDID") }
             if let level {
+                phoneSyncTime = now
                 UserDefaults.standard.set(level, forKey: "phone.lastBattery")
-                UserDefaults.standard.set(Date(), forKey: "phone.lastSyncTime")
+                UserDefaults.standard.set(now, forKey: "phone.lastSyncTime")
                 if let name, !name.isEmpty { UserDefaults.standard.set(name, forKey: "phone.lastName") }
             }
             onPhoneUpdate?(level, charging, name)
@@ -330,10 +354,12 @@ class IDeviceReader: NSObject {
             let level    = json["level"] as? Int
             let charging = json["charging"] as? Bool ?? false
             let name     = json["name"] as? String
-            lastPadSuccess = Date()
+            let now      = Date()
+            lastPadSuccess = now
             if let level {
+                padSyncTime = now
                 UserDefaults.standard.set(level, forKey: "pad.lastBattery")
-                UserDefaults.standard.set(Date(), forKey: "pad.lastSyncTime")
+                UserDefaults.standard.set(now, forKey: "pad.lastSyncTime")
                 if let name, !name.isEmpty { UserDefaults.standard.set(name, forKey: "pad.lastName") }
             }
             onPadUpdate?(level, charging, name)
@@ -439,6 +465,8 @@ class IDeviceReader: NSObject {
         if let last = lastBartbeatRestart, Date().timeIntervalSince(last) < cooldown { return }
         lastBartbeatRestart = Date()
         lastBartbeatOutput  = Date()  // reset so we don't loop immediately
+        // Increment generation so any pending terminationHandler doesn't double-relaunch
+        bartbeatGeneration &+= 1
         // Prefer SIGKILL: a wedged bartbeat can ignore SIGTERM and stay alive for hours.
         if let proc = bartbeat, proc.isRunning {
             kill(proc.processIdentifier, SIGKILL)
@@ -468,11 +496,9 @@ class IDeviceReader: NSObject {
 
         // Keep trying to recover when a known phone/pad hasn't synced recently,
         // even if bartbeat is still emitting non-battery noise (connected/etc).
-        let ud = UserDefaults.standard
-        let phoneSyncAge = (ud.object(forKey: "phone.lastSyncTime") as? Date)
-            .map { now.timeIntervalSince($0) }
-        let padSyncAge = (ud.object(forKey: "pad.lastSyncTime") as? Date)
-            .map { now.timeIntervalSince($0) }
+        // Uses in-memory cached timestamps to avoid hammering UserDefaults every 15s.
+        let phoneSyncAge = phoneSyncTime.map { now.timeIntervalSince($0) }
+        let padSyncAge = padSyncTime.map { now.timeIntervalSince($0) }
         if !silent, (phoneSyncAge ?? 0) > deviceTimeout || (padSyncAge ?? 0) > deviceTimeout {
             restartBartbeat()
         }
@@ -489,12 +515,14 @@ class IDeviceReader: NSObject {
         // iPhone / iPad: hide after 30 minutes
         if phoneStale {
             lastPhoneSuccess = nil
+            phoneSyncTime = nil
             DispatchQueue.main.async { [weak self] in
                 self?.onPhoneUpdate?(nil, nil, nil)
             }
         }
         if padStale {
             lastPadSuccess = nil
+            padSyncTime = nil
             DispatchQueue.main.async { [weak self] in self?.onPadUpdate?(nil, nil, nil) }
         }
     }
@@ -543,6 +571,10 @@ class IDeviceReader: NSObject {
 
 private extension String {
     func value(for key: String) -> String {
+        let trimmed = trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix(key + ":") {
+            return trimmed.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+        }
         for line in components(separatedBy: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.hasPrefix(key + ":") {

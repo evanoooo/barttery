@@ -51,12 +51,21 @@ class LogitechReader {
         0xB350: "K850 Keyboard",
     ]
 
+    /// Pre-built normalized → canonical lookup to avoid O(n) scan per call.
+    private static let normalizedNameMap: [String: String] = {
+        func normalized(_ value: String) -> String {
+            String(value.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+        }
+        var map: [String: String] = [:]
+        for name in supportedPIDs.values { map[normalized(name)] = name }
+        return map
+    }()
+
     static func canonicalName(for name: String) -> String? {
         func normalized(_ value: String) -> String {
             String(value.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
         }
-        let key = normalized(name)
-        return supportedPIDs.values.first { normalized($0) == key }
+        return normalizedNameMap[normalized(name)]
     }
 
     func startMonitoring() {
@@ -147,7 +156,7 @@ private enum HIDPPEngine {
                         onDevicesFound: @escaping (Set<String>) -> Void,
                         onChargingUpdate: @escaping ([LogitechChargingReading]) -> Void,
                         completion: @escaping ([AccessoryBattery]) -> Void) {
-        Thread.detachNewThread {
+        DispatchQueue.global(qos: .utility).async {
             let mgr = IOHIDManagerCreate(kCFAllocatorDefault, 0)
             IOHIDManagerSetDeviceMatching(mgr, [kIOHIDVendorIDKey: vendorID] as CFDictionary)
             guard IOHIDManagerOpen(mgr, 0) == kIOReturnSuccess else {

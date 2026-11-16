@@ -90,8 +90,15 @@ class MacBatteryReader {
 
     private func publish() {
         let battery = read()
-        DispatchQueue.main.async { [weak self] in
-            self?.onUpdate?(battery)
+        // IOPSNotification callbacks fire on the main RunLoop, and readNow() is
+        // always called from the main thread in DeviceBatteryMonitor.  Skip the
+        // async hop to deliver the update synchronously and avoid extra latency.
+        if Thread.isMainThread {
+            onUpdate?(battery)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.onUpdate?(battery)
+            }
         }
     }
 

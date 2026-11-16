@@ -77,7 +77,8 @@ class DeviceBatteryMonitor: ObservableObject {
             DispatchQueue.main.async { self?.rebuildIcon() }
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
-            self?.refresh()
+            guard let self, !self.isPopupOpen else { return }
+            self.refresh()
         }
         refreshTimer?.tolerance = 15
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
@@ -495,7 +496,9 @@ class DeviceBatteryMonitor: ObservableObject {
     private static func applyBTNames(to items: [AccessoryBattery],
                                      excluding occupied: Set<String>) -> [AccessoryBattery] {
         guard !items.isEmpty else { return items }
-        let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []
+        // Use a short-TTL cache: mergeAccessories() fires on every sub-reader
+        // callback and calling pairedDevices() unconditionally hammers IOBluetooth.
+        let paired = cachedPairedDevices()
         // Connected BT peripheral devices (mice/keyboards: major device class 0x05)
         // whose names aren't already shown in another reader's output.
         let candidates = paired.filter { dev in
@@ -510,6 +513,23 @@ class DeviceBatteryMonitor: ObservableObject {
             guard let btName = btDev.name, btName != item.name else { return item }
             return item.renamed(btName)
         }
+    }
+
+    /// Cached result of `IOBluetoothDevice.pairedDevices()` with a 5-second TTL.
+    /// `mergeAccessories()` fires on every sub-reader callback, so calling
+    /// `pairedDevices()` unconditionally would hammer IOBluetooth unnecessarily.
+    private static var _pairedDevicesCache: [IOBluetoothDevice] = []
+    private static var _pairedDevicesCachedAt: Date = .distantPast
+
+    private static func cachedPairedDevices() -> [IOBluetoothDevice] {
+        let now = Date()
+        if now.timeIntervalSince(_pairedDevicesCachedAt) < 5 {
+            return _pairedDevicesCache
+        }
+        let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []
+        _pairedDevicesCache = devices
+        _pairedDevicesCachedAt = now
+        return devices
     }
 
     // MARK: - Icon
