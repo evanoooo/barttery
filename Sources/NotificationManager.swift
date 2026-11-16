@@ -80,6 +80,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func check(device: BatteryDevice, level: Int, isCharging: Bool) {
+        guard (1...100).contains(level) else { return }
         let settings = AppSettings.shared
         let rules = settings.rules(for: device)
         var state = states[device] ?? DeviceState()

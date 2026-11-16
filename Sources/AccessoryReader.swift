@@ -10,10 +10,12 @@ struct AccessoryBattery: Equatable {
     /// Time of this device's last successful battery read, not its last redraw.
     var updatedAt: Date? = nil
     var chargingKnown: Bool = true
+    var device: BatteryDevice? = nil
 
     func renamed(_ displayName: String) -> AccessoryBattery {
         AccessoryBattery(name: displayName, level: level, charging: charging,
-                         isApple: isApple, updatedAt: updatedAt, chargingKnown: chargingKnown)
+                         isApple: isApple, updatedAt: updatedAt, chargingKnown: chargingKnown,
+                         device: device)
     }
 
     static func isHeadphoneName(_ lower: String) -> Bool {
@@ -21,6 +23,8 @@ struct AccessoryBattery: Equatable {
             || lower.contains("wh-") || lower.contains("wf-") || lower.contains("bose")
             || lower.contains("beats") || lower.contains("jabra") || lower.contains("shokz")
             || lower.contains("soundcore") || lower.contains("linkbuds") || lower.contains("headset")
+            || lower.contains("音箱") || lower.contains("耳机") || lower.contains("speaker")
+            || lower.contains("audio") || lower.contains("sound")
     }
 
     static func isSupportedAccessoryName(_ lower: String) -> Bool {
@@ -34,19 +38,27 @@ struct AccessoryBattery: Equatable {
             || lower.contains("k780") || lower.contains("k800") || lower.contains("k850")
     }
 
+    private var isMouse: Bool {
+        let lower = name.lowercased()
+        return lower.contains("mouse") || lower.contains("trackball") || lower.contains("master")
+            || lower.contains("anywhere") || lower.contains("g304") || lower.contains("g502")
+            || lower.contains("gpro") || lower.contains("g pro") || lower.contains("superlight")
+    }
+
     private var isHeadphones: Bool {
         Self.isHeadphoneName(name.lowercased())
     }
 
     var icon: String {
-        let lower = name.lowercased()
-        if isHeadphones               { return "headphones" }
-        if isKeyboard                 { return "keyboard" }
-        if lower.contains("trackpad") { return "rectangle.and.hand.point.up.left" }
+        if device == .headphones || isHeadphones { return "headphones" }
+        if device == .keyboard || isKeyboard     { return "keyboard" }
+        if device == .trackpad || name.lowercased().contains("trackpad") { return "rectangle.and.hand.point.up.left" }
+        if device == .mouse || isMouse           { return isApple ? "magicmouse" : "computermouse" }
         return isApple ? "magicmouse" : "computermouse"
     }
 
     var batteryDevice: BatteryDevice {
+        if let device { return device }
         let lower = name.lowercased()
         if isHeadphones               { return .headphones }
         if isKeyboard                 { return .keyboard }
@@ -170,7 +182,7 @@ class AccessoryReader: NSObject {
             var cfProps: Unmanaged<CFMutableDictionary>?
             guard IORegistryEntryCreateCFProperties(service, &cfProps, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                   let props = cfProps?.takeRetainedValue() as? [String: Any],
-                  let battery = props["BatteryPercent"] as? Int, battery >= 0,
+                  let battery = props["BatteryPercent"] as? Int, (1...100).contains(battery),
                   let product = props["Product"] as? String, !product.isEmpty
             else { continue }
 

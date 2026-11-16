@@ -77,13 +77,14 @@ class BTHeadphonesReader: NSObject {
                 disconnectNotes[key] = n
             }
 
-            if let batteryInfo = readNativeHeadphoneBattery(device), batteryInfo.level >= 0, batteryInfo.level <= 100 {
+            if let batteryInfo = readNativeHeadphoneBattery(device), (1...100).contains(batteryInfo.level) {
                 let reading = AccessoryBattery(
                     name: name,
                     level: batteryInfo.level,
                     charging: batteryInfo.charging,
                     updatedAt: Date(),
-                    chargingKnown: batteryInfo.chargingKnown
+                    chargingKnown: batteryInfo.chargingKnown,
+                    device: .headphones
                 )
                 // Key by address (with name fallback) to avoid collisions between same-named devices.
                 lastKnownHeadphones[key] = reading
@@ -130,8 +131,8 @@ class BTHeadphonesReader: NSObject {
         let caseLevel = readIntProperty(device, selectors: Self.caseSelectors)
 
         var levels: [Int] = []
-        if let l = left, l >= 0, l <= 100 { levels.append(l) }
-        if let r = right, r >= 0, r <= 100 { levels.append(r) }
+        if let l = left, (1...100).contains(l) { levels.append(l) }
+        if let r = right, (1...100).contains(r) { levels.append(r) }
 
         if !levels.isEmpty {
             // For earbuds in use, take the minimum of left/right as the alertable level
@@ -143,7 +144,8 @@ class BTHeadphonesReader: NSObject {
         }
 
         // 2. Check for single/combined battery (standard over-ear/on-ear Bluetooth headphones)
-        if let single = readIntProperty(device, selectors: Self.singleSelectors), single >= 0, single <= 100 {
+        // A return value of 0 from private selectors indicates unsupported/no battery data; ignore it.
+        if let single = readIntProperty(device, selectors: Self.singleSelectors), (1...100).contains(single) {
             let isChargingVal = readBoolProperty(device, selectors: Self.chargingSelectors)
             let charging = isChargingVal ?? false
             let chargingKnown = (isChargingVal != nil)
@@ -151,7 +153,7 @@ class BTHeadphonesReader: NSObject {
         }
 
         // 3. Fallback to case level if available alone
-        if let c = caseLevel, c >= 0, c <= 100 {
+        if let c = caseLevel, (1...100).contains(c) {
             let isChargingVal = readBoolProperty(device, selectors: Self.chargingSelectors)
             return BatteryInfo(level: c, charging: isChargingVal ?? false, chargingKnown: isChargingVal != nil)
         }
@@ -162,7 +164,7 @@ class BTHeadphonesReader: NSObject {
     private func readIntProperty(_ obj: AnyObject, selectors: [Selector]) -> Int? {
         for sel in selectors {
             guard obj.responds(to: sel) else { continue }
-            if let val = callIntSelector(obj, sel), val >= 0, val <= 100 {
+            if let val = callIntSelector(obj, sel), (1...100).contains(val) {
                 return val
             }
         }

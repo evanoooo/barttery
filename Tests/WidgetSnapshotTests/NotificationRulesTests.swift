@@ -60,4 +60,28 @@ final class NotificationRulesTests: XCTestCase {
         settings.toggleThreshold(device: testDevice, threshold: 20)
         XCTAssertEqual(settings.isThresholdEnabled(device: testDevice, threshold: 20), initiallyEnabled)
     }
+
+    func testAccessoryDeviceClassificationDoesNotDefaultToMouse() {
+        let speaker = AccessoryBattery(name: "REDMI音箱", level: 50, charging: false, updatedAt: Date(), chargingKnown: false)
+        XCTAssertEqual(speaker.batteryDevice, .headphones)
+
+        let headphones = AccessoryBattery(name: "Sony WH-1000XM4", level: 80, charging: false, updatedAt: Date(), chargingKnown: false)
+        XCTAssertEqual(headphones.batteryDevice, .headphones)
+
+        let mouse = AccessoryBattery(name: "Logitech MX Master 3S", level: 60, charging: false, updatedAt: Date(), chargingKnown: false)
+        XCTAssertEqual(mouse.batteryDevice, .mouse)
+
+        let keyboard = AccessoryBattery(name: "Keychron K3 Keyboard", level: 70, charging: false, updatedAt: Date(), chargingKnown: false)
+        XCTAssertEqual(keyboard.batteryDevice, .keyboard)
+
+        let trackpad = AccessoryBattery(name: "Magic Trackpad", level: 90, charging: false, updatedAt: Date(), chargingKnown: false)
+        XCTAssertEqual(trackpad.batteryDevice, .trackpad)
+    }
+
+    func testNotificationManagerIgnoresInvalidZeroLevel() {
+        // Clear any previous test residual
+        UserDefaults.standard.removeObject(forKey: "nm.mouse.level")
+        NotificationManager.shared.check(device: .mouse, level: 0, isCharging: false)
+        XCTAssertNil(UserDefaults.standard.object(forKey: "nm.mouse.level"))
+    }
 }
