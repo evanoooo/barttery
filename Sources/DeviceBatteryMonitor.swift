@@ -48,6 +48,8 @@ class DeviceBatteryMonitor: ObservableObject {
     private var btHeadphonesReader: BTHeadphonesReader?
     private var refreshTimer:    Timer?
     private var retryTimer:      Timer?
+    private var refreshEndWork:  DispatchWorkItem?
+    private var isPopupOpen:     Bool = false
     private var iconCancellable: AnyCancellable?
     private var wakeObserver:    NSObjectProtocol?
     private var lastIconKey:     (level: Int?, state: ChargeState?, showPct: Bool)?
@@ -102,14 +104,24 @@ class DeviceBatteryMonitor: ObservableObject {
     deinit {
         refreshTimer?.invalidate()
         retryTimer?.invalidate()
+        refreshEndWork?.cancel()
         iconCancellable?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
     }
 
-    func refresh() {
-        isRefreshing = true
+    func refresh(userInitiated: Bool = false) {
+        if userInitiated || isPopupOpen {
+            if !isRefreshing { isRefreshing = true }
+            refreshEndWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.isRefreshing = false
+                self?.refreshEndWork = nil
+            }
+            refreshEndWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+        }
         macReader?.readNow()
         accessoryReader?.readOnce()
         bleReader?.refresh()
@@ -117,12 +129,10 @@ class DeviceBatteryMonitor: ObservableObject {
         btHeadphonesReader?.readOnce()
         ideviceReader?.scanNow()
         pruneStaleSyncTimes()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.isRefreshing = false
-        }
     }
 
     func onPopupOpen() {
+        isPopupOpen = true
         let openTime = Date()
         airPodsReader?.refreshPlist()
         airPodsReader?.startScanning()
@@ -159,8 +169,12 @@ class DeviceBatteryMonitor: ObservableObject {
     }
 
     func onPopupClose() {
+        isPopupOpen = false
         retryTimer?.invalidate()
         retryTimer = nil
+        refreshEndWork?.cancel()
+        refreshEndWork = nil
+        if isRefreshing { isRefreshing = false }
     }
 
     /// Hide phone/pad/watch rows whose last sync is older than 30 minutes.
@@ -553,19 +567,24 @@ private func saveCachedAirPodsBattery(_ b: AirPodsBattery) {
 }
 
 private func cachedAirPodsBattery() -> AirPodsBattery? {
-    let ud = UserDefaults.standard
-    guard let t = ud.object(forKey: "airPods.lastSyncTime") as? Date,
-          Date().timeIntervalSince(t) < 14400 else { return nil }
+    cachedAirPodsBattery(from: .standard, at: Date())
+}
+
+func cachedAirPodsBattery(from ud: UserDefaults, at now: Date = Date()) -> AirPodsBattery? {
+    guard let t = ud.object(forKey: "airPods.lastSyncTime") as? Date else { return nil }
+    let age = now.timeIntervalSince(t)
+    guard age.isFinite, age >= -60, age < 14400 else { return nil }
     let left = ud.object(forKey: "airPods.lastLeft") as? Int
     let right = ud.object(forKey: "airPods.lastRight") as? Int
     let cas = ud.object(forKey: "airPods.lastCase") as? Int
     guard left != nil || right != nil || cas != nil else { return nil }
+    let chargingStillFresh = age < AirPodsReader.caseChargingStaleTimeout
     return AirPodsBattery(
         left: left,
         right: right,
         case: cas,
-        leftCharging: ud.bool(forKey: "airPods.lastLeftCharging"),
-        rightCharging: ud.bool(forKey: "airPods.lastRightCharging"),
-        caseCharging: ud.bool(forKey: "airPods.lastCaseCharging")
+        leftCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastLeftCharging"),
+        rightCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastRightCharging"),
+        caseCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastCaseCharging")
     )
 }

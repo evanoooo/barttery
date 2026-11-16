@@ -404,7 +404,7 @@ struct RefreshButton: View {
     var body: some View {
         Button {
             guard !monitor.isRefreshing else { return }
-            monitor.refresh()
+            monitor.refresh(userInitiated: true)
             WidgetSnapshotPublisher.reloadAllWidgets()
         } label: {
             HStack(spacing: 5) {

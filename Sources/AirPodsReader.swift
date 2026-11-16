@@ -31,6 +31,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     var onConnect: ((String) -> Void)?
 
     private static let deviceStaleTimeout: TimeInterval = 14400.0 // 4 hours
+    static let caseChargingStaleTimeout: TimeInterval = 300.0   // 5 minutes
 
     private var central: CBCentralManager?
     private let bleQueue = DispatchQueue(label: "me.yura.barttery.airpods.ble", qos: .utility)
@@ -57,6 +58,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private var lastCaseChargingDate: Date?
     private var lastPodCharging: Bool?
     private var lastChargingSeenDate: Date?
+    private var knownProductID: UInt16?
 
     // Cached selectors for framework parsing
     private let selAlloc    = NSSelectorFromString("alloc")
@@ -72,6 +74,29 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let rightCharging: Bool
         let caseCharging: Bool
         let lastSeen: Date
+        let caseLastSeen: Date?
+        let productID: UInt16?
+    }
+
+    static func isValidProximityPairingPacket(_ mfr: Data, expectedPID: UInt16? = nil) -> Bool {
+        guard mfr.count >= 10,
+              mfr[0] == 0x4C, mfr[1] == 0x00,
+              mfr[2] == 0x07,
+              mfr[3] >= 0x06,
+              mfr[4] == 0x01
+        else { return false }
+        if let expectedPID {
+            let pktPID = UInt16(mfr[5]) | (UInt16(mfr[6]) << 8)
+            guard pktPID == expectedPID else { return false }
+        }
+        return true
+    }
+
+    static func isCaseChargingFresh(observedAt: Date?, referenceDate: Date, now: Date = Date()) -> Bool {
+        guard let observedAt else { return false }
+        let age = now.timeIntervalSince(observedAt)
+        guard age.isFinite, age >= -60, age <= caseChargingStaleTimeout else { return false }
+        return referenceDate.timeIntervalSince(observedAt) <= 120
     }
 
     static func isAirPods(name: String?, address: String?) -> Bool {
@@ -118,6 +143,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         // Periodic sync to check plist every 30 seconds (skips parsing when mtime unchanged)
         syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.refreshPlist()
+            self?.expireStaleCaseCharging()
         }
         syncTimer?.tolerance = 10
 
@@ -226,9 +252,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         guard RSSI.intValue > -75 else { return }
 
         guard let mfr = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
-              mfr.count >= 10,
-              mfr[0] == 0x4C, mfr[1] == 0x00,
-              mfr[2] == 0x07
+              Self.isValidProximityPairingPacket(mfr)
         else { return }
 
         let b7 = mfr[7], b8 = mfr[8], b9 = mfr[9]
@@ -253,6 +277,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private func handleAdvertisement(_ mfr: Data, lidClosed: Bool) {
         // Only process if we have paired AirPods or plist data
         if !hasPairedAirPods && plistLevels == nil {
+            return
+        }
+        guard Self.isValidProximityPairingPacket(mfr, expectedPID: knownProductID) else {
             return
         }
 
@@ -289,8 +316,10 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         }
 
         if chargingValid {
-            lastCaseCharging = (chargingBits & 0x04) != 0
-            lastCaseChargingDate = now
+            if caseInPacket {
+                lastCaseCharging = (chargingBits & 0x04) != 0
+                lastCaseChargingDate = now
+            }
             let podBits = (chargingBits & 0x03) != 0
             if podBits || lidClosed {
                 lastPodCharging = true
@@ -299,6 +328,17 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 lastPodCharging = false
                 lastChargingSeenDate = now
             }
+        }
+
+        if lastCaseCharging == true,
+           let seen = lastCaseChargingDate,
+           now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
+            lastCaseCharging = false
+        }
+        if lastPodCharging == true,
+           let seen = lastChargingSeenDate,
+           now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
+            lastPodCharging = false
         }
 
         let leftBat:  Int? = plistLevels?.left  ?? lastLeftBattery
@@ -310,7 +350,11 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let isPodCharging = lastPodCharging ?? (plistLevels?.leftCharging == true || plistLevels?.rightCharging == true)
         let leftCharging  = isPodCharging
         let rightCharging = isPodCharging
-        let caseCharging  = lastCaseCharging ?? (plistLevels?.caseCharging == true)
+        let plistCaseChargingFresh = (plistLevels?.caseCharging == true) &&
+            Self.isCaseChargingFresh(observedAt: plistLevels?.caseLastSeen,
+                                     referenceDate: plistLevels?.lastSeen ?? now,
+                                     now: now)
+        let caseCharging  = lastCaseCharging ?? plistCaseChargingFresh
 
         Self.logger.debug("AirPods packet: flip=\(flip) lidClosed=\(lidClosed) pods=\(String(format: "%02X", pods)) caseData=\(String(format: "%02X", caseData)) -> L:\(leftBat ?? -1) R:\(rightBat ?? -1) Case:\(caseBat ?? -1) Chg:\(isPodCharging)")
 
@@ -397,6 +441,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         if let levels = plistLevelsFromArchive(outerData) {
             plistLevels = levels
             hasPairedAirPods = true
+            if let pid = levels.productID { knownProductID = pid }
             if let l = levels.left { lastLeftBattery = l }
             if let r = levels.right { lastRightBattery = r }
             if let c = levels.cas {
@@ -404,6 +449,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 lastCaseSeenDate = Date()
             }
             lastCaseCharging = levels.caseCharging
+            lastCaseChargingDate = levels.caseCharging ? (levels.caseLastSeen ?? levels.lastSeen) : nil
             lastPodCharging = levels.leftCharging || levels.rightCharging
 
             let battery = AirPodsBattery(
@@ -419,6 +465,33 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 onUpdate?(battery)
             }
             return
+        }
+    }
+
+    private func expireStaleCaseCharging(now: Date = Date()) {
+        var changed = false
+        if lastCaseCharging == true,
+           let seen = lastCaseChargingDate,
+           now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
+            lastCaseCharging = false
+            changed = true
+        }
+        if lastPodCharging == true,
+           let seen = lastChargingSeenDate,
+           now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
+            lastPodCharging = false
+            changed = true
+        }
+        guard changed, let current = lastBattery else { return }
+        let updated = AirPodsBattery(
+            left: current.left, right: current.right, case: current.case,
+            leftCharging: lastPodCharging ?? false,
+            rightCharging: lastPodCharging ?? false,
+            caseCharging: lastCaseCharging ?? false
+        )
+        if !updated.isEqual(to: current) {
+            lastBattery = updated
+            onUpdate?(updated)
         }
     }
 
@@ -461,14 +534,25 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             var maxLstS: Double = 0
             var lv = [String: Double]()
             var chg = [String: Bool]()
+            var lstMap = [String: Double]()
             for field in ["bale", "bari", "baca"] {
                 guard let bat = resolveObj(d[field]) else { continue }
-                if let t = bat["lstS"] as? Double { maxLstS = max(maxLstS, t) }
+                if let t = bat["lstS"] as? Double {
+                    maxLstS = max(maxLstS, t)
+                    lstMap[field] = t
+                }
                 if let l = bat["btyl"] as? Double { lv[field] = l }
                 if let aabs = bat["aabs"] as? Int { chg[field] = (aabs == 2) }
             }
             guard maxLstS > bestLstS else { continue }
             bestLstS = maxLstS
+
+            let lastSeen = Date(timeIntervalSinceReferenceDate: maxLstS)
+            let caseLastSeen = lstMap["baca"].map { Date(timeIntervalSinceReferenceDate: $0) }
+            let rawCaseChg = chg["baca"] ?? false
+            let freshCaseChg = rawCaseChg && Self.isCaseChargingFresh(observedAt: caseLastSeen, referenceDate: lastSeen)
+            let rawPID = (d["pid"] as? Int) ?? (d["prid"] as? Int)
+            let pid = rawPID.flatMap { (1...Int(UInt16.max)).contains($0) ? UInt16($0) : nil }
 
             func level(_ f: String) -> Int? {
                 guard let v = lv[f], v > 0 else { return nil }
@@ -480,8 +564,10 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 cas: level("baca"),
                 leftCharging: chg["bale"] ?? false,
                 rightCharging: chg["bari"] ?? false,
-                caseCharging: chg["baca"] ?? false,
-                lastSeen: Date(timeIntervalSinceReferenceDate: maxLstS)
+                caseCharging: freshCaseChg,
+                lastSeen: lastSeen,
+                caseLastSeen: caseLastSeen,
+                productID: pid
             )
         }
 

@@ -195,6 +195,7 @@ enum WidgetSnapshotStore {
     static func read(from url: URL? = fileURL) -> WidgetBatterySnapshot {
         guard let url else { return .empty }
         let targets = (url == fileURL) ? candidateURLs() : [url]
+        let decoder = JSONDecoder()
 
         var bestSnapshot: WidgetBatterySnapshot = .empty
 
@@ -207,7 +208,7 @@ enum WidgetSnapshotStore {
                         defer { fclose(f) }
                         fseek(f, 0, SEEK_END)
                         let len = ftell(f)
-                        if len > 0 {
+                        if len > 0 && len <= 1_048_576 {
                             fseek(f, 0, SEEK_SET)
                             var buf = [UInt8](repeating: 0, count: len)
                             let readBytes = fread(&buf, 1, len, f)
@@ -220,7 +221,7 @@ enum WidgetSnapshotStore {
             }
 
             if let data = fileData,
-               let snapshot = try? JSONDecoder().decode(WidgetBatterySnapshot.self, from: data) {
+               let snapshot = try? decoder.decode(WidgetBatterySnapshot.self, from: data) {
                 if !snapshot.devices.isEmpty {
                     return snapshot
                 }
