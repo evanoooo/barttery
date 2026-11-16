@@ -344,6 +344,23 @@ class DeviceBatteryMonitor: ObservableObject {
             if let name = UserDefaults.standard.string(forKey: "airPods.lastName") {
                 self.airPodsName = name
             }
+            if let podLevel = [cached.left, cached.right].compactMap({ $0 }).min() {
+                let isChg = cached.leftCharging || cached.rightCharging
+                BatteryHistoryStore.shared.record(
+                    device: "airpods",
+                    level: podLevel,
+                    isCharging: isChg,
+                    isPlugged: isChg
+                )
+            }
+            if let caseLevel = cached.case {
+                BatteryHistoryStore.shared.record(
+                    device: "airpods.case",
+                    level: caseLevel,
+                    isCharging: cached.caseCharging,
+                    isPlugged: cached.caseCharging
+                )
+            }
         }
         let reader = AirPodsReader()
         reader.onConnect = { [weak self] name in
@@ -366,6 +383,24 @@ class DeviceBatteryMonitor: ObservableObject {
                     }
                     self.syncTimes[BatteryDevice.airPods.rawValue] = Date()
                     saveCachedAirPodsBattery(battery)
+
+                    if let podLevel = [battery.left, battery.right].compactMap({ $0 }).min() {
+                        let isChg = battery.leftCharging || battery.rightCharging
+                        BatteryHistoryStore.shared.record(
+                            device: "airpods",
+                            level: podLevel,
+                            isCharging: isChg,
+                            isPlugged: isChg
+                        )
+                    }
+                    if let caseLevel = battery.case {
+                        BatteryHistoryStore.shared.record(
+                            device: "airpods.case",
+                            level: caseLevel,
+                            isCharging: battery.caseCharging,
+                            isPlugged: battery.caseCharging
+                        )
+                    }
                 }
                 if let name = reader.deviceName, self.airPodsName != name {
                     self.airPodsName = name
@@ -516,6 +551,14 @@ class DeviceBatteryMonitor: ObservableObject {
         }.sorted { $0.name < $1.name }
         if accessories != merged {
             accessories = merged
+            for item in merged {
+                BatteryHistoryStore.shared.record(
+                    device: "accessory.\(item.name)",
+                    level: item.level,
+                    isCharging: item.chargingKnown && item.charging,
+                    isPlugged: item.chargingKnown && item.charging
+                )
+            }
         }
     }
 

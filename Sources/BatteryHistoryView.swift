@@ -14,7 +14,7 @@ struct BatteryHistoryView: View {
     @ObservedObject var monitor: DeviceBatteryMonitor
     @ObservedObject private var historyStore = BatteryHistoryStore.shared
 
-    @State private var selectedDeviceKey: String = "mac"
+    @State private var selectedDeviceKey: String = UserDefaults.standard.string(forKey: "batteryHistory.selectedDevice") ?? "mac"
     @State private var selectedRange: HistoryRange = {
         let saved = UserDefaults.standard.string(forKey: "batteryHistory.range")
         return HistoryRange(rawValue: saved ?? "24h") ?? .twentyFourHours
@@ -39,6 +39,26 @@ struct BatteryHistoryView: View {
         if monitor.watchBattery != nil || (historyStore.samplesByDevice["watch"]?.isEmpty == false) {
             let watchName = monitor.watchBattery?.name ?? "Apple Watch"
             list.append(("watch", watchName, "applewatch"))
+        }
+        if monitor.airPodsBattery != nil || (historyStore.samplesByDevice["airpods"]?.isEmpty == false) {
+            let isPro = monitor.displayAirPodsName.lowercased().contains("pro")
+            list.append(("airpods", monitor.displayAirPodsName, isPro ? "airpodspro" : "airpods"))
+        }
+        if monitor.airPodsBattery?.case != nil || (historyStore.samplesByDevice["airpods.case"]?.isEmpty == false) {
+            let isPro = monitor.displayAirPodsName.lowercased().contains("pro")
+            list.append(("airpods.case", L10n.tr("status.case"), isPro ? "airpodspro.chargingcase.wireless" : "airpods.chargingcase"))
+        }
+        for acc in monitor.accessories {
+            let key = "accessory.\(acc.name)"
+            if !list.contains(where: { $0.key == key }) {
+                list.append((key, acc.name, acc.icon))
+            }
+        }
+        for (devKey, samples) in historyStore.samplesByDevice where !samples.isEmpty {
+            if devKey.hasPrefix("accessory.") && !list.contains(where: { $0.key == devKey }) {
+                let name = String(devKey.dropFirst("accessory.".count))
+                list.append((devKey, name, "computermouse"))
+            }
         }
         return list
     }
@@ -125,6 +145,7 @@ struct BatteryHistoryView: View {
                                 ForEach(availableDevices, id: \.key) { dev in
                                     Button {
                                         selectedDeviceKey = dev.key
+                                        UserDefaults.standard.set(dev.key, forKey: "batteryHistory.selectedDevice")
                                         hoveredBucket = nil
                                     } label: {
                                         Label(dev.name, systemImage: dev.icon)
@@ -132,7 +153,7 @@ struct BatteryHistoryView: View {
                                 }
                             } label: {
                                 HStack(spacing: 3) {
-                                    Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? "Mac")
+                                    Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? availableDevices.first?.name ?? "Mac")
                                         .font(.system(size: 10, weight: .medium))
                                         .foregroundColor(.secondary)
                                         .lineLimit(1)
