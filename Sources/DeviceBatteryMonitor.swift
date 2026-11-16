@@ -703,12 +703,14 @@ func cachedAirPodsBattery(from ud: UserDefaults, at now: Date = Date()) -> AirPo
     let cas = ud.object(forKey: "airPods.lastCase") as? Int
     guard left != nil || right != nil || cas != nil else { return nil }
     let chargingStillFresh = age < AirPodsReader.caseChargingStaleTimeout
+    let caseBat = cas
+    let caseChg = chargingStillFresh && (caseBat ?? 0) < 100 && ud.bool(forKey: "airPods.lastCaseCharging")
     return AirPodsBattery(
         left: left,
         right: right,
-        case: cas,
+        case: caseBat,
         leftCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastLeftCharging"),
         rightCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastRightCharging"),
-        caseCharging: chargingStillFresh && ud.bool(forKey: "airPods.lastCaseCharging")
+        caseCharging: caseChg
     )
 }

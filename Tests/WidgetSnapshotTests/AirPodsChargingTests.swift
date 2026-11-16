@@ -58,4 +58,26 @@ final class AirPodsChargingTests: XCTestCase {
 
         XCTAssertNil(cachedAirPodsBattery(from: defaults, at: now.addingTimeInterval(15000)))
     }
+
+    func testCachedAirPodsBatterySuppressesCaseChargingWhenFull() throws {
+        let suite = "Barttery.AirPodsChargingTests.FullCase.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(100, forKey: "airPods.lastLeft")
+        defaults.set(100, forKey: "airPods.lastRight")
+        defaults.set(100, forKey: "airPods.lastCase")
+        defaults.set(true, forKey: "airPods.lastLeftCharging")
+        defaults.set(true, forKey: "airPods.lastRightCharging")
+        defaults.set(true, forKey: "airPods.lastCaseCharging")
+        defaults.set(now, forKey: "airPods.lastSyncTime")
+
+        let fresh = try XCTUnwrap(cachedAirPodsBattery(from: defaults, at: now.addingTimeInterval(30)))
+        XCTAssertEqual(fresh.case, 100)
+        // Case at 100% is fully charged / not charging, so charging bolt is suppressed
+        XCTAssertFalse(fresh.caseCharging)
+        // Pods docked in case are actively held / charging
+        XCTAssertTrue(fresh.leftCharging)
+        XCTAssertTrue(fresh.rightCharging)
+    }
 }
