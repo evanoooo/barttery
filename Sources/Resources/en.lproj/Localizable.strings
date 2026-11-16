@@ -97,3 +97,8 @@
 "widget.refresh_hint_desc" = "Immediately write snapshot and request WidgetKit to reload desktop widgets.";
 "widget.refresh_now" = "Refresh Now";
 "widget.refreshed" = "Refreshed";
+
+/* Battery History */
+"history.title" = "Battery Level";
+"history.past24h" = "Past 24 Hours";
+

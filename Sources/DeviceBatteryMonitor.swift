@@ -212,6 +212,11 @@ class DeviceBatteryMonitor: ObservableObject {
                 self.rebuildIcon()
             }
             if let battery = battery {
+                BatteryHistoryStore.shared.record(
+                    device: "mac",
+                    level: battery.level,
+                    state: battery.state
+                )
                 NotificationManager.shared.check(
                     device: .mac,
                     level: battery.level,
@@ -236,6 +241,12 @@ class DeviceBatteryMonitor: ObservableObject {
                 if let name, self.phoneName != name { self.phoneName = name }
                 if let level {
                     self.syncTimes[BatteryDevice.phone.rawValue] = Date()
+                    BatteryHistoryStore.shared.record(
+                        device: "phone",
+                        level: level,
+                        isCharging: newCharging,
+                        isPlugged: newCharging
+                    )
                     NotificationManager.shared.check(
                         device: .phone,
                         level: level,
@@ -257,6 +268,12 @@ class DeviceBatteryMonitor: ObservableObject {
                 if let name, self.padName != name { self.padName = name }
                 if let level {
                     self.syncTimes[BatteryDevice.pad.rawValue] = Date()
+                    BatteryHistoryStore.shared.record(
+                        device: "pad",
+                        level: level,
+                        isCharging: newCharging,
+                        isPlugged: newCharging
+                    )
                     NotificationManager.shared.check(
                         device: .pad,
                         level: level,
@@ -275,6 +292,13 @@ class DeviceBatteryMonitor: ObservableObject {
                 if self.watchBattery != watch { self.watchBattery = watch }
                 if let watch {
                     self.syncTimes[BatteryDevice.watch.rawValue] = watch.updatedAt
+                    BatteryHistoryStore.shared.record(
+                        device: "watch",
+                        level: watch.level,
+                        isCharging: watch.isCharging,
+                        isPlugged: watch.isCharging,
+                        at: watch.updatedAt
+                    )
                     NotificationManager.shared.check(
                         device: .watch,
                         level: watch.level,

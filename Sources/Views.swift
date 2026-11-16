@@ -148,6 +148,12 @@ struct MenuContentView: View {
                     .padding(.bottom, 12)
             }
 
+            if monitor.macBattery != nil || !BatteryHistoryStore.shared.samplesByDevice.isEmpty {
+                Divider().padding(.horizontal, 16)
+                BatteryHistoryView(monitor: monitor)
+                Divider().padding(.horizontal, 16)
+            }
+
             Button {
                 settings.launchAtLogin.toggle()
             } label: {

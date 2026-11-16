@@ -97,3 +97,8 @@
 "widget.refresh_hint_desc" = "修改设置后立即写入快照并请求 WidgetKit 刷新桌面小组件。";
 "widget.refresh_now" = "立即刷新";
 "widget.refreshed" = "已刷新";
+
+/* 电池用量历史 */
+"history.title" = "电池电量";
+"history.past24h" = "过去 24 小时";
+
