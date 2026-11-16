@@ -110,20 +110,24 @@ class BTHeadphonesReader: NSObject {
         let caseLevel = readIntProperty(device, selectors: Self.caseSelectors)
 
         var levels: [Int] = []
-        if let l = left, l > 0, l <= 100 { levels.append(l) }
-        if let r = right, r > 0, r <= 100 { levels.append(r) }
+        if let l = left, l >= 0, l <= 100 { levels.append(l) }
+        if let r = right, r >= 0, r <= 100 { levels.append(r) }
 
         if !levels.isEmpty {
             // For earbuds in use, take the minimum of left/right as the alertable level
             let minLevel = levels.min() ?? 100
-            let charging = readBoolProperty(device, selectors: Self.chargingSelectors) ?? false
-            return BatteryInfo(level: minLevel, charging: charging, chargingKnown: charging)
+            let isChargingVal = readBoolProperty(device, selectors: Self.chargingSelectors)
+            let charging = isChargingVal ?? false
+            let chargingKnown = (isChargingVal != nil)
+            return BatteryInfo(level: minLevel, charging: charging, chargingKnown: chargingKnown)
         }
 
         // 2. Check for single/combined battery (standard over-ear/on-ear Bluetooth headphones)
-        if let single = readIntProperty(device, selectors: Self.singleSelectors), single > 0, single <= 100 {
-            let charging = readBoolProperty(device, selectors: Self.chargingSelectors) ?? false
-            return BatteryInfo(level: single, charging: charging, chargingKnown: charging)
+        if let single = readIntProperty(device, selectors: Self.singleSelectors), single >= 0, single <= 100 {
+            let isChargingVal = readBoolProperty(device, selectors: Self.chargingSelectors)
+            let charging = isChargingVal ?? false
+            let chargingKnown = (isChargingVal != nil)
+            return BatteryInfo(level: single, charging: charging, chargingKnown: chargingKnown)
         }
 
         // 3. Fallback to case level if available alone

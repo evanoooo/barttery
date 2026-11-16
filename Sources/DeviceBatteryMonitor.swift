@@ -76,11 +76,11 @@ class DeviceBatteryMonitor: ObservableObject {
         iconCancellable = AppSettings.shared.$showPercentageInMenuBar.sink { [weak self] _ in
             DispatchQueue.main.async { self?.rebuildIcon() }
         }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             guard let self, !self.isPopupOpen else { return }
             self.refresh()
         }
-        refreshTimer?.tolerance = 15
+        refreshTimer?.tolerance = 30
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
         // for as long as the Mac was asleep. Force an immediate re-poll on wake.
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -171,6 +171,7 @@ class DeviceBatteryMonitor: ObservableObject {
 
     func onPopupClose() {
         isPopupOpen = false
+        airPodsReader?.stopScanning()
         retryTimer?.invalidate()
         retryTimer = nil
         refreshEndWork?.cancel()
@@ -353,30 +354,33 @@ class DeviceBatteryMonitor: ObservableObject {
             }
         }
         reader.onUpdate = { [weak self] battery in
-            guard let self else { return }
-            if let battery {
-                if self.airPodsBattery != battery {
-                    self.airPodsBattery = battery
+            let apply = {
+                guard let self else { return }
+                if let battery {
+                    if self.airPodsBattery != battery {
+                        self.airPodsBattery = battery
+                    }
+                    let connected = reader.isConnected
+                    if self.airPodsConnected != connected {
+                        self.airPodsConnected = connected
+                    }
+                    self.syncTimes[BatteryDevice.airPods.rawValue] = Date()
+                    saveCachedAirPodsBattery(battery)
                 }
-                let connected = reader.isConnected
-                if self.airPodsConnected != connected {
-                    self.airPodsConnected = connected
+                if let name = reader.deviceName, self.airPodsName != name {
+                    self.airPodsName = name
+                    UserDefaults.standard.set(name, forKey: "airPods.lastName")
                 }
-                self.syncTimes[BatteryDevice.airPods.rawValue] = Date()
-                saveCachedAirPodsBattery(battery)
+                if let battery,
+                   let minLevel = [battery.left, battery.right].compactMap({ $0 }).min() {
+                    NotificationManager.shared.check(
+                        device: .airPods,
+                        level: minLevel,
+                        isCharging: battery.leftCharging || battery.rightCharging
+                    )
+                }
             }
-            if let name = reader.deviceName, self.airPodsName != name {
-                self.airPodsName = name
-                UserDefaults.standard.set(name, forKey: "airPods.lastName")
-            }
-            if let battery,
-               let minLevel = [battery.left, battery.right].compactMap({ $0 }).min() {
-                NotificationManager.shared.check(
-                    device: .airPods,
-                    level: minLevel,
-                    isCharging: battery.leftCharging || battery.rightCharging
-                )
-            }
+            if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
         }
         reader.startMonitoring()
         airPodsReader = reader

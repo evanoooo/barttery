@@ -60,11 +60,13 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     private func pruneStalePeripherals() {
         let now = Date()
         let staleTimeout: TimeInterval = 7200
-        for (id, date) in measurementDates {
-            if now.timeIntervalSince(date) > staleTimeout {
-                if let p = peripherals[id], p.state == .connected { continue }
-                remove(id)
-            }
+        let staleIDs = measurementDates.compactMap { id, date -> UUID? in
+            guard now.timeIntervalSince(date) > staleTimeout else { return nil }
+            if let p = peripherals[id], p.state == .connected { return nil }
+            return id
+        }
+        for id in staleIDs {
+            remove(id)
         }
     }
 

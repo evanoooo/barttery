@@ -13,6 +13,7 @@ static int watchlog_should_stream(int registry_result, int once) {
 
 /* Only accept a present Watch power-source update, never phone/AirPods data. */
 static int watchlog_level(const char *line) {
+    if (!line) return -1;
     if (!strstr(line, "bluetoothd(CoreUtils)") ||
         !strstr(line, "Power source updated CBPowerSource ") ||
         !strstr(line, "AcCa Watch,") || !strstr(line, "Present yes,")) return -1;
@@ -30,8 +31,11 @@ static int watchlog_level(const char *line) {
 /* Observed Watch power events use Battery +N% on the charger and -N% off it.
  * An unsigned value has an unknown charging state, not "not charging". */
 static int watchlog_charging(const char *line) {
+    if (!line) return -1;
     if (watchlog_level(line) < 0) return -1;
-    const char *p = strstr(line, "Battery ") + strlen("Battery ");
+    const char *p = strstr(line, "Battery ");
+    if (!p) return -1;
+    p += strlen("Battery ");
     return *p == '+' ? 1 : (*p == '-' ? 0 : -1);
 }
 #endif

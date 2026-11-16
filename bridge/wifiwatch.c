@@ -751,13 +751,14 @@ static int stream_watch(wifi_state_t *st, const char *udid, const char *ip_hint,
         return -1;
     }
     dbg("listening for live Watch power-source events");
-    time_t deadline = time(NULL) + 25;
+    time_t stream_duration = once ? 25 : 180;
+    time_t deadline = time(NULL) + stream_duration;
     time_t next_heartbeat = 0;
     time_t next_phone_poll = time(NULL) + POLL_S;
     char line[16384], chunk[4096];
     size_t used = 0;
     int overflow = 0, emitted = 0;
-    while (!once || time(NULL) < deadline) {
+    while (time(NULL) < deadline) {
         if (!once && !stdin_alive()) break;
         if (!once && time(NULL) >= next_heartbeat) {
             puts("{\"type\":\"watch-stream\"}");

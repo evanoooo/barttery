@@ -265,15 +265,17 @@ enum WidgetSnapshotStore {
         let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
+        let tempURL = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         var written = false
         lastFopenErrno = 0
-        url.withUnsafeFileSystemRepresentation { cPath in
-            guard let cPath else { return }
-            if let f = fopen(cPath, "wb") {
+        tempURL.withUnsafeFileSystemRepresentation { tmpPath in
+            guard let tmpPath else { return }
+            if let f = fopen(tmpPath, "wb") {
                 defer { fclose(f) }
                 data.withUnsafeBytes { ptr in
                     if let base = ptr.baseAddress,
                        fwrite(base, 1, data.count, f) == data.count {
+                        fflush(f)
                         written = true
                     }
                 }
@@ -281,7 +283,19 @@ enum WidgetSnapshotStore {
                 lastFopenErrno = errno
             }
         }
-        if written { return }
+        if written {
+            var renamed = false
+            url.withUnsafeFileSystemRepresentation { destPath in
+                tempURL.withUnsafeFileSystemRepresentation { srcPath in
+                    guard let srcPath, let destPath else { return }
+                    if rename(srcPath, destPath) == 0 {
+                        renamed = true
+                    }
+                }
+            }
+            if renamed { return }
+        }
+        try? FileManager.default.removeItem(at: tempURL)
 
         try data.write(to: url, options: .atomic)
     }

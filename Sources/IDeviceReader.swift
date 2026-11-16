@@ -531,12 +531,22 @@ class IDeviceReader: NSObject {
         }
 
         do {
+            var outputData = Data()
+            let readQueue = DispatchQueue(label: "me.yura.barttery.pipeRead", qos: .utility)
+            let readGroup = DispatchGroup()
+            readGroup.enter()
+            readQueue.async {
+                outputData = out.fileHandleForReading.readDataToEndOfFile()
+                readGroup.leave()
+            }
+
             try proc.run()
             let waitResult = sema.wait(timeout: .now() + timeout)
             if waitResult == .timedOut && proc.isRunning {
                 Self.stopTimedOutHelper(proc)
             }
-            return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            _ = readGroup.wait(timeout: .now() + 1.0)
+            return String(data: outputData, encoding: .utf8) ?? ""
         } catch {
             return ""
         }

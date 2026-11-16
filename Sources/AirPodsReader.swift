@@ -349,11 +349,17 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             lastCaseSeenDate = now
         }
 
+        let leftPodCharging: Bool
+        let rightPodCharging: Bool
         if chargingValid {
             if caseInPacket {
                 lastCaseCharging = (chargingBits & 0x04) != 0
                 lastCaseChargingDate = now
             }
+            let leftBit  = flip ? (chargingBits & 0x02) != 0 : (chargingBits & 0x01) != 0
+            let rightBit = flip ? (chargingBits & 0x01) != 0 : (chargingBits & 0x02) != 0
+            leftPodCharging  = leftBit || lidClosed
+            rightPodCharging = rightBit || lidClosed
             let podBits = (chargingBits & 0x03) != 0
             if podBits || lidClosed {
                 lastPodCharging = true
@@ -362,6 +368,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 lastPodCharging = false
                 lastChargingSeenDate = now
             }
+        } else {
+            leftPodCharging  = false
+            rightPodCharging = false
         }
 
         if lastCaseCharging == true,
@@ -381,9 +390,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
         guard leftBat != nil || rightBat != nil || caseBat != nil else { return }
 
-        let isPodCharging = lastPodCharging ?? (plistLevels?.leftCharging == true || plistLevels?.rightCharging == true)
-        let leftCharging  = isPodCharging
-        let rightCharging = isPodCharging
+        let leftCharging  = plistLevels?.leftCharging ?? (chargingValid ? leftPodCharging : (lastPodCharging ?? false))
+        let rightCharging = plistLevels?.rightCharging ?? (chargingValid ? rightPodCharging : (lastPodCharging ?? false))
+        let isPodCharging = leftCharging || rightCharging
         let plistCaseChargingFresh = (plistLevels?.caseCharging == true) &&
             Self.isCaseChargingFresh(observedAt: plistLevels?.caseLastSeen,
                                      referenceDate: plistLevels?.lastSeen ?? now,
@@ -413,7 +422,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             guard let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject else { return false }
             guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
                   let payload = payloads.first else { return false }
-            return (payload as AnyObject).value(forKey: "lidClosed") as? Int == 1
+            let pObj = payload as AnyObject
+            guard pObj.responds(to: NSSelectorFromString("lidClosed")) else { return false }
+            return pObj.value(forKey: "lidClosed") as? Int == 1
         }
     }
 

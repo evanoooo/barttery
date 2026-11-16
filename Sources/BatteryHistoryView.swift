@@ -44,9 +44,9 @@ struct BatteryHistoryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header with title, hover info, collapse toggle, range switcher & device menu
-            HStack(alignment: .center, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            // Row 1: Header (Title & Collapse on left, Segmented switcher & Device picker on right)
+            HStack(alignment: .center, spacing: 0) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isCollapsed.toggle()
@@ -62,110 +62,127 @@ struct BatteryHistoryView: View {
                         Text(L10n.tr("history.title"))
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(.primary)
-
-                        if let hovered = hoveredBucket, let lvl = hovered.level {
-                            if selectedRange == .sevenDays {
-                                Text("•  \(formatSevenDaysHover(hovered.startDate))  \(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")")
-                                    .font(.system(size: 11, weight: .regular))
-                                    .foregroundColor(.secondary)
-                                    .transition(.opacity)
-                            } else {
-                                Text("•  \(formatTimeRange(from: hovered.startDate, to: hovered.endDate))  \(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")")
-                                    .font(.system(size: 11, weight: .regular))
-                                    .foregroundColor(.secondary)
-                                    .transition(.opacity)
-                            }
-                        } else if !isCollapsed {
-                            Text("•  \(selectedRange == .sevenDays ? L10n.tr("history.past7d") : L10n.tr("history.past24h"))")
-                                .font(.system(size: 11, weight: .regular))
-                                .foregroundColor(.secondary)
-                        }
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                Spacer(minLength: 4)
+                Spacer(minLength: 8)
 
                 if !isCollapsed {
-                    // Range Segmented Switcher (24h / 7d)
-                    HStack(spacing: 1) {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                selectedRange = .twentyFourHours
-                                UserDefaults.standard.set("24h", forKey: "batteryHistory.range")
-                                hoveredBucket = nil
-                            }
-                        } label: {
-                            Text(L10n.tr("history.range_24h"))
-                                .font(.system(size: 10, weight: selectedRange == .twentyFourHours ? .semibold : .regular))
-                                .foregroundColor(selectedRange == .twentyFourHours ? .primary : .secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(
-                                    selectedRange == .twentyFourHours ?
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(Color.primary.opacity(0.12)) : nil
-                                )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                selectedRange = .sevenDays
-                                UserDefaults.standard.set("7d", forKey: "batteryHistory.range")
-                                hoveredBucket = nil
-                            }
-                        } label: {
-                            Text(L10n.tr("history.range_7d"))
-                                .font(.system(size: 10, weight: selectedRange == .sevenDays ? .semibold : .regular))
-                                .foregroundColor(selectedRange == .sevenDays ? .primary : .secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(
-                                    selectedRange == .sevenDays ?
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(Color.primary.opacity(0.12)) : nil
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(2)
-                    .background(Color.primary.opacity(0.06))
-                    .cornerRadius(6)
-
-                    // Device Picker (if > 1 device)
-                    if availableDevices.count > 1 {
-                        Menu {
-                            ForEach(availableDevices, id: \.key) { dev in
-                                Button {
-                                    selectedDeviceKey = dev.key
+                    HStack(spacing: 6) {
+                        // Range Segmented Switcher (24h / 7d)
+                        HStack(spacing: 1) {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    selectedRange = .twentyFourHours
+                                    UserDefaults.standard.set("24h", forKey: "batteryHistory.range")
                                     hoveredBucket = nil
-                                } label: {
-                                    Label(dev.name, systemImage: dev.icon)
                                 }
+                            } label: {
+                                Text(L10n.tr("history.range_24h"))
+                                    .font(.system(size: 10, weight: selectedRange == .twentyFourHours ? .semibold : .regular))
+                                    .foregroundColor(selectedRange == .twentyFourHours ? .primary : .secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        selectedRange == .twentyFourHours ?
+                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .fill(Color.primary.opacity(0.12)) : nil
+                                    )
                             }
-                        } label: {
-                            HStack(spacing: 3) {
-                                Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? "Mac")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(.secondary)
+                            .buttonStyle(.plain)
+
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    selectedRange = .sevenDays
+                                    UserDefaults.standard.set("7d", forKey: "batteryHistory.range")
+                                    hoveredBucket = nil
+                                }
+                            } label: {
+                                Text(L10n.tr("history.range_7d"))
+                                    .font(.system(size: 10, weight: selectedRange == .sevenDays ? .semibold : .regular))
+                                    .foregroundColor(selectedRange == .sevenDays ? .primary : .secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        selectedRange == .sevenDays ?
+                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .fill(Color.primary.opacity(0.12)) : nil
+                                    )
                             }
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.primary.opacity(0.06))
-                            .cornerRadius(5)
+                            .buttonStyle(.plain)
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
+                        .padding(2)
+                        .background(Color.primary.opacity(0.06))
+                        .cornerRadius(6)
+
+                        // Device Picker (if > 1 device)
+                        if availableDevices.count > 1 {
+                            Menu {
+                                ForEach(availableDevices, id: \.key) { dev in
+                                    Button {
+                                        selectedDeviceKey = dev.key
+                                        hoveredBucket = nil
+                                    } label: {
+                                        Label(dev.name, systemImage: dev.icon)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? "Mac")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .frame(maxWidth: 85)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.primary.opacity(0.06))
+                                .cornerRadius(5)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
                     }
                 }
             }
+            .frame(height: 20)
 
             if !isCollapsed {
+                // Row 2: Subheader (Hover reading or Range subtitle, fixed 1-line height)
+                HStack(spacing: 4) {
+                    if let hovered = hoveredBucket {
+                        let timeStr = (selectedRange == .sevenDays) ? formatSevenDaysHover(hovered.startDate) : formatTimeRange(from: hovered.startDate, to: hovered.endDate)
+                        let readingStr: String = {
+                            if let lvl = hovered.level {
+                                return "\(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")"
+                            } else {
+                                return "--"
+                            }
+                        }()
+                        Text("\(timeStr)  ·  \(readingStr)")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                    } else {
+                        Text(selectedRange == .sevenDays ? L10n.tr("history.past7d") : L10n.tr("history.past24h"))
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .frame(height: 16, alignment: .leading)
+                .transition(.opacity)
+
+                // Row 3: The Chart (Fixed height 92)
                 switch selectedRange {
                 case .twentyFourHours:
                     let buckets = historyStore.timelineBuckets(for: selectedDeviceKey)
@@ -176,8 +193,7 @@ struct BatteryHistoryView: View {
                         chargingSpans: spans,
                         hoveredBucket: $hoveredBucket
                     )
-                    .frame(height: 104)
-                    .padding(.top, 2)
+                    .frame(height: 92)
 
                 case .sevenDays:
                     let buckets = historyStore.sevenDaysTimelineBuckets(for: selectedDeviceKey)
@@ -187,8 +203,7 @@ struct BatteryHistoryView: View {
                         referenceDate: Date(),
                         hoveredBucket: $hoveredBucket
                     )
-                    .frame(height: 104)
-                    .padding(.top, 2)
+                    .frame(height: 92)
                 }
             }
         }

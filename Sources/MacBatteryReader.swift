@@ -31,7 +31,7 @@ class MacBatteryReader {
         }, context)
 
         if let src = src?.takeRetainedValue() {
-            CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
+            CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
             runLoopSource = src
         }
         publish()
@@ -97,7 +97,8 @@ class MacBatteryReader {
 
     deinit {
         if let src = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .defaultMode)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
+            CFRunLoopSourceInvalidate(src)
         }
     }
 }

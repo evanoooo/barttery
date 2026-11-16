@@ -149,7 +149,6 @@ struct MenuContentView: View {
             }
 
             if monitor.macBattery != nil || !BatteryHistoryStore.shared.samplesByDevice.isEmpty {
-                Divider().padding(.horizontal, 16)
                 BatteryHistoryView(monitor: monitor)
                 Divider().padding(.horizontal, 16)
             }

@@ -149,7 +149,7 @@ private enum HIDPPEngine {
     private static let devIdx:   UInt8 = 0xFF
     private static let swID:     UInt8 = 0x0A
     private static let frameLen  = 20
-    private static let timeout:  TimeInterval = 1.5
+    private static let timeout:  TimeInterval = 0.4
 
     static func readAll(supported: [Int: String],
                         lastKnownLevels: [String: Int],
@@ -226,7 +226,9 @@ private enum HIDPPEngine {
         let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
         defer { buf.deallocate() }
         IOHIDDeviceRegisterInputReportCallback(dev, buf, 64, { ctx, result, _, _, _, report, len in
-            guard result == kIOReturnSuccess, len > 0, let ctx else { return }
+            guard result == kIOReturnSuccess, len >= 4,
+                  (report[0] == 0x10 || report[0] == 0x11),
+                  let ctx else { return }
             let q = Unmanaged<ReportQueue>.fromOpaque(ctx).takeUnretainedValue()
             q.reports.append(Data(bytes: report, count: len))
         }, qPtr)
