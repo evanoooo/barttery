@@ -8,5 +8,9 @@
     <array>
         <string>group.me.yura.barttery</string>
     </array>
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+    <array>
+        <string>/Library/Application Support/battery-snapshot.json</string>
+    </array>
 </dict>
 </plist>

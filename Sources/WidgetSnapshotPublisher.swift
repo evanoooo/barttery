@@ -138,7 +138,9 @@ extension DeviceBatteryMonitor {
             // One ring for the earbuds, using the lower available level.
             let level = [pods.left, pods.right].compactMap { $0 }.min()
             let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? date
-            append("airpods", displayAirPodsName, "airpods", level,
+            let isPro = displayAirPodsName.lowercased().contains("pro")
+            let podsSymbol = isPro ? "airpodspro" : "airpods"
+            append("airpods", displayAirPodsName, podsSymbol, level,
                    pods.leftCharging || pods.rightCharging, updatedAt: updatedAt)
         }
         if let watch = watchBattery {
@@ -147,7 +149,9 @@ extension DeviceBatteryMonitor {
         }
         if let pods = airPodsBattery {
             let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? date
-            append("airpods.case", "\(displayAirPodsName) Case", "airpods.chargingcase", pods.case,
+            let isPro = displayAirPodsName.lowercased().contains("pro")
+            let caseSymbol = isPro ? "airpodspro.chargingcase.wireless.fill" : "airpods.chargingcase.fill"
+            append("airpods.case", "\(displayAirPodsName) Case", caseSymbol, pods.case,
                    pods.caseCharging, updatedAt: updatedAt)
         }
         append("pad", padName, "ipad", padBattery, padCharging,

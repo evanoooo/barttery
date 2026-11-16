@@ -66,6 +66,19 @@ struct MenuContentView: View {
         .background(MenuBarWindowHeightAnimator(height: fitted ?? 0))
     }
 
+    private var orderedMenuSections: [MenuDeviceSection] {
+        var result: [MenuDeviceSection] = []
+        for id in settings.widgetDeviceOrder {
+            if let section = MenuDeviceSection(rawValue: id), !result.contains(section) {
+                result.append(section)
+            }
+        }
+        for section in MenuDeviceSection.allCases where !result.contains(section) {
+            result.append(section)
+        }
+        return result
+    }
+
     private static var maxPopupHeight: CGFloat {
         guard let screen = NSScreen.main else { return 800 }
         return max(240, screen.visibleFrame.height - 12)
@@ -91,28 +104,38 @@ struct MenuContentView: View {
 
             if monitor.hasAnyDevices {
                 VStack(spacing: 8) {
-                    if let mac = monitor.macBattery {
-                        DeviceRow(icon: "macbook", name: monitor.displayMacName,
-                                  battery: mac.level, state: mac.state, device: .mac)
-                    }
-                    if let pods = monitor.airPodsBattery {
-                        AirPodsRow(name: monitor.displayAirPodsName, battery: pods, isConnected: monitor.airPodsConnected)
-                    }
-                    ForEach(monitor.accessories, id: \.name) { acc in
-                        AccessoryRow(accessory: acc)
-                    }
-                    if let pct = monitor.phoneBattery {
-                        DeviceRow(icon: "iphone", name: monitor.displayPhoneName,
-                                  battery: pct, state: monitor.phoneCharging ? .charging : .discharging, device: .phone)
-                    }
-                    if let pct = monitor.padBattery {
-                        DeviceRow(icon: "ipad", name: monitor.padName,
-                                  battery: pct, state: monitor.padCharging ? .charging : .discharging, device: .pad)
-                    }
-                    if let watch = monitor.watchBattery {
-                        DeviceRow(icon: "applewatch", name: watch.name,
-                                  battery: watch.level, state: watch.isCharging ? .charging : .discharging,
-                                  device: .watch, chargingKnown: watch.chargingKnown)
+                    ForEach(orderedMenuSections) { section in
+                        switch section {
+                        case .mac:
+                            if let mac = monitor.macBattery {
+                                DeviceRow(icon: "macbook", name: monitor.displayMacName,
+                                          battery: mac.level, state: mac.state, device: .mac)
+                            }
+                        case .airpods:
+                            if let pods = monitor.airPodsBattery {
+                                AirPodsRow(name: monitor.displayAirPodsName, battery: pods, isConnected: monitor.airPodsConnected)
+                            }
+                        case .accessory:
+                            ForEach(monitor.accessories, id: \.name) { acc in
+                                AccessoryRow(accessory: acc)
+                            }
+                        case .phone:
+                            if let pct = monitor.phoneBattery {
+                                DeviceRow(icon: "iphone", name: monitor.displayPhoneName,
+                                          battery: pct, state: monitor.phoneCharging ? .charging : .discharging, device: .phone)
+                            }
+                        case .pad:
+                            if let pct = monitor.padBattery {
+                                DeviceRow(icon: "ipad", name: monitor.padName,
+                                          battery: pct, state: monitor.padCharging ? .charging : .discharging, device: .pad)
+                            }
+                        case .watch:
+                            if let watch = monitor.watchBattery {
+                                DeviceRow(icon: "applewatch", name: watch.name,
+                                          battery: watch.level, state: watch.isCharging ? .charging : .discharging,
+                                          device: .watch, chargingKnown: watch.chargingKnown)
+                            }
+                        }
                     }
                 }
                 .padding(.leading, 16)
@@ -202,6 +225,11 @@ struct MenuContentView: View {
         }
     }
 
+}
+
+private enum MenuDeviceSection: String, Identifiable, CaseIterable {
+    case mac, phone, airpods, watch, pad, accessory
+    var id: String { rawValue }
 }
 
 private struct MenuContentHeightKey: PreferenceKey {

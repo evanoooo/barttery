@@ -164,9 +164,11 @@ enum WidgetSnapshotStore {
             urls.append(URL(fileURLWithPath: appSupportPath))
         }
 
-        // 4. Default Group Containers folder path
+        // 4. Default Group Containers folder path and host App Support path
         let groupPath = "\(homePath)/Library/Group Containers/\(appGroup)/battery-snapshot.json"
         urls.append(URL(fileURLWithPath: groupPath))
+        let hostAppSupportPath = "\(homePath)/Library/Application Support/battery-snapshot.json"
+        urls.append(URL(fileURLWithPath: hostAppSupportPath))
 
         // Deduplicate while preserving precedence
         var seen = Set<String>()
