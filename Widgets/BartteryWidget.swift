@@ -300,6 +300,7 @@ private struct MiniBatteryGauge: View {
 
 private struct BatteryRing: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     let device: WidgetBatteryDevice
     let date: Date
@@ -320,6 +321,15 @@ private struct BatteryRing: View {
         colorScheme == .dark ? Color.white.opacity(0.88) : Color.primary.opacity(0.85)
     }
 
+    private var widgetIsolationColor: Color {
+        if renderingMode != .fullColor {
+            return Color.black
+        }
+        return colorScheme == .dark
+            ? Color(red: 28/255, green: 28/255, blue: 30/255)
+            : Color(red: 246/255, green: 246/255, blue: 250/255)
+    }
+
     private var statusIconColor: Color {
         if stale { return .secondary }
         if device.isPaused { return tint }
@@ -336,59 +346,56 @@ private struct BatteryRing: View {
     var body: some View {
         VStack(spacing: single ? 11 : 10) {
             ZStack {
-                // Ring strokes (background track and battery level progress)
-                // When charging or paused, the top region hugs the exact silhouette of the status glyph
-                // via a tight 1.8pt destinationOut mask cutout, matching the native iOS Batteries widget.
-                ZStack {
-                    Circle()
-                        .stroke(trackColor, lineWidth: lineWidth)
-                    Circle()
-                        .trim(from: 0, to: CGFloat(min(100, max(0, device.level))) / 100)
-                        .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .widgetAccentable()
-                }
-                .mask {
-                    if let statusSymbol = device.statusSymbol {
-                        let boltSize = max(8.0, size * 0.17)
-                        let d: CGFloat = max(1.5, size * 0.032)
+                // 1. Perfectly unconstrained circles (guarantees 100% round curves, never clipped or squared)
+                Circle()
+                    .stroke(trackColor, lineWidth: lineWidth)
+                Circle()
+                    .trim(from: 0, to: CGFloat(min(100, max(0, device.level))) / 100)
+                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .widgetAccentable()
 
-                        Rectangle()
-                            .fill(Color.white)
-                            .overlay {
-                                ZStack {
-                                    ForEach([-d, 0, d], id: \.self) { dx in
-                                        ForEach([-d, 0, d], id: \.self) { dy in
-                                            Image(systemName: statusSymbol)
-                                                .font(.system(size: boltSize, weight: .bold))
-                                                .offset(x: dx, y: dy)
-                                        }
-                                    }
-                                }
-                                .offset(y: -size / 2)
-                                .blendMode(.destinationOut)
-                            }
-                            .compositingGroup()
-                    } else {
-                        Rectangle().fill(Color.white)
-                    }
-                }
-
+                // 2. Central device icon
                 Image(systemName: device.symbol)
                     .symbolRenderingMode(.hierarchical)
                     .font(.system(size: size * 0.42, weight: .medium))
                     .foregroundStyle(stale ? Color.secondary : iconColor)
 
-                // 12 o'clock charging / paused indicator placed at the top of the ring
-                // Sits seamlessly inside the cutout contour without punching any circular hole
+                // 3. 12 o'clock charging / paused indicator placed at the top of the ring
+                // Uses a micro 1.2pt contour outline in background color to separate the glyph from the progress ring
+                // without punching any circular holes or breaking the underlying circular geometry.
                 if let statusSymbol = device.statusSymbol {
-                    let boltSize = max(8.0, size * 0.17)
+                    let boltSize = max(7.5, size * 0.155)
+                    let d: CGFloat = 1.2
 
-                    Image(systemName: statusSymbol)
-                        .font(.system(size: boltSize, weight: .bold))
-                        .foregroundStyle(statusIconColor)
-                        .offset(y: -size / 2)
-                        .widgetAccentable()
+                    ZStack {
+                        // Tight 1.2pt contour outline in background color hugging the glyph
+                        ForEach([-d, d], id: \.self) { dx in
+                            ForEach([-d, d], id: \.self) { dy in
+                                Image(systemName: statusSymbol)
+                                    .font(.system(size: boltSize, weight: .bold))
+                                    .foregroundStyle(widgetIsolationColor)
+                                    .offset(x: dx, y: dy)
+                            }
+                        }
+                        ForEach([-d, d], id: \.self) { offset in
+                            Image(systemName: statusSymbol)
+                                .font(.system(size: boltSize, weight: .bold))
+                                .foregroundStyle(widgetIsolationColor)
+                                .offset(x: offset, y: 0)
+                            Image(systemName: statusSymbol)
+                                .font(.system(size: boltSize, weight: .bold))
+                                .foregroundStyle(widgetIsolationColor)
+                                .offset(x: 0, y: offset)
+                        }
+
+                        // Core charging / paused glyph
+                        Image(systemName: statusSymbol)
+                            .font(.system(size: boltSize, weight: .bold))
+                            .foregroundStyle(statusIconColor)
+                    }
+                    .offset(y: -size / 2)
+                    .widgetAccentable()
                 }
             }
             .frame(width: size, height: size)
