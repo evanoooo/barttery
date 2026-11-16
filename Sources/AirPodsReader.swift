@@ -58,6 +58,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private var lastCaseSeenDate: Date?
     private var lastCaseCharging: Bool?
     private var lastCaseChargingDate: Date?
+    private var caseNonChargingConsecutiveCount: Int = 0
     private var lastPodCharging: Bool?
     private var lastChargingSeenDate: Date?
     private var knownProductID: UInt16?
@@ -353,8 +354,21 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let rightPodCharging: Bool
         if chargingValid {
             if caseInPacket {
-                lastCaseCharging = (chargingBits & 0x04) != 0
-                lastCaseChargingDate = now
+                let bleCaseCharging = (chargingBits & 0x04) != 0
+                if bleCaseCharging {
+                    lastCaseCharging = true
+                    lastCaseChargingDate = now
+                    caseNonChargingConsecutiveCount = 0
+                } else {
+                    caseNonChargingConsecutiveCount += 1
+                    // Debounce: require multiple consecutive non-charging packets and grace period
+                    // to prevent lossy broadcast packets from causing charging indicator flutter.
+                    if caseNonChargingConsecutiveCount >= 4,
+                       let lastDate = lastCaseChargingDate,
+                       now.timeIntervalSince(lastDate) > 15.0 {
+                        lastCaseCharging = false
+                    }
+                }
             }
             let leftBit  = flip ? (chargingBits & 0x02) != 0 : (chargingBits & 0x01) != 0
             let rightBit = flip ? (chargingBits & 0x01) != 0 : (chargingBits & 0x02) != 0
@@ -397,7 +411,17 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             Self.isCaseChargingFresh(observedAt: plistLevels?.caseLastSeen,
                                      referenceDate: plistLevels?.lastSeen ?? now,
                                      now: now)
-        let caseCharging  = lastCaseCharging ?? plistCaseChargingFresh
+        let caseCharging: Bool
+        if plistCaseChargingFresh {
+            caseCharging = true
+            lastCaseCharging = true
+            lastCaseChargingDate = now
+            caseNonChargingConsecutiveCount = 0
+        } else if let bleCharging = lastCaseCharging {
+            caseCharging = bleCharging
+        } else {
+            caseCharging = plistLevels?.caseCharging ?? false
+        }
 
         Self.logger.debug("AirPods packet: flip=\(flip) lidClosed=\(lidClosed) pods=\(String(format: "%02X", pods)) caseData=\(String(format: "%02X", caseData)) -> L:\(leftBat ?? -1) R:\(rightBat ?? -1) Case:\(caseBat ?? -1) Chg:\(isPodCharging)")
 
@@ -499,6 +523,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             }
             lastCaseCharging = levels.caseCharging
             lastCaseChargingDate = levels.caseCharging ? (levels.caseLastSeen ?? levels.lastSeen) : nil
+            caseNonChargingConsecutiveCount = 0
             lastPodCharging = levels.leftCharging || levels.rightCharging
 
             let battery = AirPodsBattery(
