@@ -43,6 +43,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private var isScanning = false
     private var dutyActive = false
     private var dutyGeneration = 0
+    private var scanTimeoutWorkItem: DispatchWorkItem?
     private var lastPlistModDate: Date?
     private var lastAdvByPeripheral: [UUID: (b7: UInt8, b8: UInt8, b9: UInt8, time: TimeInterval)] = [:]
     private var connectNotification: IOBluetoothUserNotification?
@@ -171,18 +172,31 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
     @objc private func handleSleep() {
         stopScanning()
+        syncTimer?.invalidate()
+        syncTimer = nil
     }
 
     @objc private func handleWake() {
         cachedBTDevice = findPairedDevice()
         hasPairedAirPods = (cachedBTDevice != nil)
         refreshPlist()
-        startScanning()
+        if syncTimer == nil {
+            syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                self?.refreshPlist()
+                self?.expireStaleCaseCharging()
+            }
+            syncTimer?.tolerance = 10
+        }
+        // Only run a brief scan window on wake if AirPods are actively connected;
+        // do not run duty-cycle scanning in background indefinitely.
+        if hasPairedAirPods && cachedBTDevice?.isConnected() == true {
+            startScanning(timeout: 15)
+        }
     }
 
-    func startScanning() {
+    func startScanning(timeout: TimeInterval? = nil) {
         bleQueue.async { [weak self] in
-            self?.startScanningOnBLEQueue()
+            self?.startScanningOnBLEQueue(timeout: timeout)
         }
     }
 
@@ -197,9 +211,18 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private static let scanWindow: TimeInterval = 8
     private static let scanPause: TimeInterval = 22
 
-    private func startScanningOnBLEQueue() {
+    private func startScanningOnBLEQueue(timeout: TimeInterval? = nil) {
         guard let central = central, central.state == .poweredOn else { return }
         dutyActive = true
+        scanTimeoutWorkItem?.cancel()
+        scanTimeoutWorkItem = nil
+        if let timeout {
+            let work = DispatchWorkItem { [weak self] in
+                self?.stopScanningOnBLEQueue()
+            }
+            scanTimeoutWorkItem = work
+            bleQueue.asyncAfter(deadline: .now() + timeout, execute: work)
+        }
         guard !isScanning else { return }
         dutyGeneration &+= 1  // invalidates any pending "begin window" from a pause
         beginScanWindow(generation: dutyGeneration)
@@ -229,6 +252,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     }
 
     private func stopScanningOnBLEQueue() {
+        scanTimeoutWorkItem?.cancel()
+        scanTimeoutWorkItem = nil
         dutyActive = false
         dutyGeneration &+= 1
         guard let central = central, isScanning else { return }
@@ -250,7 +275,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.onConnect?(name)
             self?.refreshPlist(force: true)
-            self?.startScanning()
+            self?.startScanning(timeout: 30)
         }
     }
 
@@ -260,10 +285,12 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         disconnectNotification?.unregister()
         disconnectNotification = nil
         // Do not clear lastBattery! The AirPods are simply in the case or disconnected from audio.
-        // Refresh plist to check for in-case battery updates.
-        refreshPlist(force: true)
-        if let battery = lastBattery {
-            onUpdate?(battery)
+        // Refresh plist on main thread to check for in-case battery updates.
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshPlist(force: true)
+            if let battery = self?.lastBattery {
+                self?.onUpdate?(battery)
+            }
         }
     }
 
@@ -276,7 +303,9 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             dutyGeneration &+= 1
             return
         }
-        startScanningOnBLEQueue()
+        if dutyActive {
+            startScanningOnBLEQueue()
+        }
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -372,10 +401,10 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             }
             let leftBit  = flip ? (chargingBits & 0x02) != 0 : (chargingBits & 0x01) != 0
             let rightBit = flip ? (chargingBits & 0x01) != 0 : (chargingBits & 0x02) != 0
-            leftPodCharging  = leftBit || lidClosed
-            rightPodCharging = rightBit || lidClosed
+            leftPodCharging  = leftBit
+            rightPodCharging = rightBit
             let podBits = (chargingBits & 0x03) != 0
-            if podBits || lidClosed {
+            if podBits {
                 lastPodCharging = true
                 lastChargingSeenDate = now
             } else if caseInPacket {
@@ -616,7 +645,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                     lstMap[field] = t
                 }
                 if let l = bat["btyl"] as? Double { lv[field] = l }
-                if let aabs = bat["aabs"] as? Int { chg[field] = (aabs == 2) }
+                if let aabs = bat["aabs"] as? Int { chg[field] = (aabs == 2 || aabs == 3) }
             }
             guard maxLstS > bestLstS else { continue }
             bestLstS = maxLstS
@@ -629,8 +658,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             let pid = rawPID.flatMap { (1...Int(UInt16.max)).contains($0) ? UInt16($0) : nil }
 
             func level(_ f: String) -> Int? {
-                guard let v = lv[f], v > 0 else { return nil }
-                return Int(ceil(v * 100)).clamped(to: 1...100)
+                guard let v = lv[f], v >= 0 else { return nil }
+                return Int(ceil(v * 100)).clamped(to: 0...100)
             }
             bestLevels = PlistLevels(
                 left: level("bale"),

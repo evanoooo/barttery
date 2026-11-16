@@ -22,6 +22,7 @@ class MacBatteryReader {
     private var runLoopSource: CFRunLoopSource?
 
     func start() {
+        stop()
         let context = Unmanaged.passUnretained(self).toOpaque()
 
         let src = IOPSNotificationCreateRunLoopSource({ ctx in
@@ -35,6 +36,14 @@ class MacBatteryReader {
             runLoopSource = src
         }
         publish()
+    }
+
+    func stop() {
+        if let src = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
+            CFRunLoopSourceInvalidate(src)
+            runLoopSource = nil
+        }
     }
 
     func read() -> MacBattery? {
@@ -90,15 +99,16 @@ class MacBatteryReader {
 
     private func publish() {
         let battery = read()
-        DispatchQueue.main.async { [weak self] in
-            self?.onUpdate?(battery)
+        if Thread.isMainThread {
+            onUpdate?(battery)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.onUpdate?(battery)
+            }
         }
     }
 
     deinit {
-        if let src = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
-            CFRunLoopSourceInvalidate(src)
-        }
+        stop()
     }
 }

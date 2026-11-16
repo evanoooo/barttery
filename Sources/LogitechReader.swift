@@ -174,14 +174,29 @@ private enum HIDPPEngine {
             var ptrs = [UnsafeRawPointer?](repeating: nil, count: count)
             CFSetGetValues(devSet, &ptrs)
 
-            var matched: [(dev: IOHIDDevice, name: String)] = []
+            var matched: [(dev: IOHIDDevice, name: String, isVendorPage: Bool)] = []
             for ptr in ptrs {
                 guard let ptr else { continue }
-                let dev = unsafeBitCast(ptr, to: IOHIDDevice.self)
+                let dev = Unmanaged<IOHIDDevice>.fromOpaque(ptr).takeUnretainedValue()
                 let pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
                 guard let name = supported[pid] else { continue }
-                matched.append((dev, name))
+                let usagePage = (IOHIDDeviceGetProperty(dev, kIOHIDPrimaryUsagePageKey as CFString) as? Int) ?? 0
+                let usage = (IOHIDDeviceGetProperty(dev, kIOHIDPrimaryUsageKey as CFString) as? Int) ?? 0
+
+                // Filter out standard mouse pointer/motion endpoints (UsagePage 0x01, Usage 0x01 or 0x02)
+                // so 1000Hz gaming mice motion reports are not intercepted in Swift during queries
+                if usagePage == 0x01 && (usage == 0x01 || usage == 0x02) {
+                    continue
+                }
+
+                // Vendor-defined usage pages (0xFF00, 0xFF43) handle HID++ reports.
+                // Prioritize them so we don't query mouse pointer interfaces and wait on 400ms timeouts.
+                let isVendor = usagePage >= 0xFF00
+                matched.append((dev, name, isVendor))
             }
+
+            // Prioritize vendor-defined HID++ interfaces
+            matched.sort { ($0.isVendorPage ? 0 : 1) < ($1.isVendorPage ? 0 : 1) }
 
             let names = Set(matched.map { $0.name })
             DispatchQueue.main.async { onDevicesFound(names) }
@@ -189,7 +204,7 @@ private enum HIDPPEngine {
             var results: [AccessoryBattery] = []
             var chargingResults: [LogitechChargingReading] = []
             var resolvedComplete = Set<String>()
-            for (dev, name) in matched {
+            for (dev, name, _) in matched {
                 if resolvedComplete.contains(name) { continue }
                 if let status = queryDevice(dev: dev, lastKnownLevel: lastKnownLevels[name]) {
                     let date = Date()

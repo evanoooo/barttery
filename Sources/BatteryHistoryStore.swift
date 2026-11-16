@@ -83,7 +83,7 @@ final class BatteryHistoryStore: ObservableObject {
     private static let bucketMinutes: Int = 15
     private static let totalBuckets24h: Int = 96
 
-    private var storageFileURL: URL? {
+    private static let storageURL: URL? = {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
@@ -92,10 +92,13 @@ final class BatteryHistoryStore: ObservableObject {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         return dir.appendingPathComponent("battery-history.json")
-    }
+    }()
+
+    private var storageFileURL: URL? { Self.storageURL }
 
     init() {
         loadFromDisk()
+        pruneAllDevices()
         setupNotifications()
     }
 
@@ -178,7 +181,11 @@ final class BatteryHistoryStore: ObservableObject {
         let timelineStart = calendar.startOfDay(for: referenceDate)
         let bucketDuration = TimeInterval(bucketMinutes * 60)
 
-        let samples = samplesByDevice[device] ?? []
+        let rawSamples = samplesByDevice[device] ?? []
+        // Ensure chronological order
+        let samples = rawSamples.sorted { $0.timestamp < $1.timestamp }
+        let nSamples = samples.count
+
         var buckets: [BatteryTimelineBucket] = []
         buckets.reserveCapacity(count)
 
@@ -190,6 +197,8 @@ final class BatteryHistoryStore: ObservableObject {
             lastKnownLevel = Int(prior.level)
             lastKnownSampleDate = prior.date
         }
+
+        var sampleIdx = 0
 
         for i in 0..<count {
             let bStart = timelineStart.addingTimeInterval(TimeInterval(i) * bucketDuration)
@@ -208,22 +217,41 @@ final class BatteryHistoryStore: ObservableObject {
                 continue
             }
 
-            let inBucket = samples.filter { $0.date >= bStart && $0.date < bEnd }
+            // Fast linear scan: advance sampleIdx to current bucket window
+            while sampleIdx < nSamples && samples[sampleIdx].date < bStart {
+                lastKnownLevel = Int(samples[sampleIdx].level)
+                lastKnownSampleDate = samples[sampleIdx].date
+                sampleIdx += 1
+            }
+
+            var scanIdx = sampleIdx
+            var inBucketLatest: BatterySample? = nil
+            var inBucketCharging = false
+            var inBucketPlugged = false
+
+            while scanIdx < nSamples && samples[scanIdx].date < bEnd {
+                let s = samples[scanIdx]
+                inBucketLatest = s
+                if s.isCharging { inBucketCharging = true }
+                if s.isPlugged  { inBucketPlugged = true }
+                scanIdx += 1
+            }
 
             let level: Int?
             let isCharging: Bool
             let isPlugged: Bool
 
-            if let latest = inBucket.last {
+            if let latest = inBucketLatest {
                 level = Int(latest.level)
-                isCharging = inBucket.contains(where: { $0.isCharging })
-                isPlugged = inBucket.contains(where: { $0.isPlugged })
+                isCharging = inBucketCharging
+                isPlugged = inBucketPlugged
                 lastKnownLevel = level
                 lastKnownSampleDate = latest.date
+                sampleIdx = scanIdx
             } else if let prev = lastKnownLevel, let prevDate = lastKnownSampleDate,
                       bEnd.timeIntervalSince(prevDate) <= 8 * 3600 {
                 // Carry forward if within 8 hours of last observation
-                let nextSample = samples.first(where: { $0.date >= bEnd })
+                let nextSample = scanIdx < nSamples ? samples[scanIdx] : nil
                 let wasCharging = (nextSample?.isCharging == true && (nextSample?.level ?? 0) > UInt8(prev))
                 level = prev
                 isCharging = wasCharging
@@ -255,7 +283,10 @@ final class BatteryHistoryStore: ObservableObject {
         let bucketDuration = TimeInterval(bucketMinutes * 60)
         let totalCount = (7 * 24 * 60) / bucketMinutes
 
-        let samples = samplesByDevice[device] ?? []
+        let rawSamples = samplesByDevice[device] ?? []
+        let samples = rawSamples.sorted { $0.timestamp < $1.timestamp }
+        let nSamples = samples.count
+
         var buckets: [BatteryTimelineBucket] = []
         buckets.reserveCapacity(totalCount)
 
@@ -266,6 +297,8 @@ final class BatteryHistoryStore: ObservableObject {
             lastKnownLevel = Int(prior.level)
             lastKnownSampleDate = prior.date
         }
+
+        var sampleIdx = 0
 
         for i in 0..<totalCount {
             let bStart = timelineStart.addingTimeInterval(TimeInterval(i) * bucketDuration)
@@ -283,21 +316,39 @@ final class BatteryHistoryStore: ObservableObject {
                 continue
             }
 
-            let inBucket = samples.filter { $0.date >= bStart && $0.date < bEnd }
+            while sampleIdx < nSamples && samples[sampleIdx].date < bStart {
+                lastKnownLevel = Int(samples[sampleIdx].level)
+                lastKnownSampleDate = samples[sampleIdx].date
+                sampleIdx += 1
+            }
+
+            var scanIdx = sampleIdx
+            var inBucketLatest: BatterySample? = nil
+            var inBucketCharging = false
+            var inBucketPlugged = false
+
+            while scanIdx < nSamples && samples[scanIdx].date < bEnd {
+                let s = samples[scanIdx]
+                inBucketLatest = s
+                if s.isCharging { inBucketCharging = true }
+                if s.isPlugged  { inBucketPlugged = true }
+                scanIdx += 1
+            }
 
             let level: Int?
             let isCharging: Bool
             let isPlugged: Bool
 
-            if let latest = inBucket.last {
+            if let latest = inBucketLatest {
                 level = Int(latest.level)
-                isCharging = inBucket.contains(where: { $0.isCharging })
-                isPlugged = inBucket.contains(where: { $0.isPlugged })
+                isCharging = inBucketCharging
+                isPlugged = inBucketPlugged
                 lastKnownLevel = level
                 lastKnownSampleDate = latest.date
+                sampleIdx = scanIdx
             } else if let prev = lastKnownLevel, let prevDate = lastKnownSampleDate,
                       bEnd.timeIntervalSince(prevDate) <= 16 * 3600 {
-                let nextSample = samples.first(where: { $0.date >= bEnd })
+                let nextSample = scanIdx < nSamples ? samples[scanIdx] : nil
                 let wasCharging = (nextSample?.isCharging == true && (nextSample?.level ?? 0) > UInt8(prev))
                 level = prev
                 isCharging = wasCharging
@@ -392,5 +443,21 @@ final class BatteryHistoryStore: ObservableObject {
             return
         }
         self.samplesByDevice = decoded
+    }
+
+    func pruneAllDevices(referenceDate: Date = Date()) {
+        let cutoff = UInt32(referenceDate.addingTimeInterval(-Self.retentionHours * 3600).timeIntervalSince1970)
+        var modified = false
+        for (dev, samples) in samplesByDevice {
+            let valid = samples.filter { $0.timestamp >= cutoff }
+            if valid.isEmpty {
+                samplesByDevice.removeValue(forKey: dev)
+                modified = true
+            } else if valid.count != samples.count {
+                samplesByDevice[dev] = valid
+                modified = true
+            }
+        }
+        if modified { isDirty = true }
     }
 }

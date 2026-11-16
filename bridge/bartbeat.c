@@ -243,12 +243,16 @@ static void query_watch(idevice_t device) {
     int  chg = 0;
     char *wname = NULL;
 
+    cv = plist_unwrap(cv);
     if (cv) {
         plist_type pt = plist_get_node_type(cv);
         if (pt == PLIST_BOOLEAN) { uint8_t b = 0; plist_get_bool_val(cv, &b); chg = b; }
         else if (pt == PLIST_STRING) { char *s = NULL; plist_get_string_val(cv, &s);
             chg = s && (s[0]=='1' || s[0]=='t' || s[0]=='T'); free(s); }
+        else if (pt == PLIST_UINT) { uint64_t u = 0; plist_get_uint_val(cv, &u); chg = u != 0; }
+        else if (pt == PLIST_INT) { int64_t i = 0; plist_get_int_val(cv, &i); chg = i != 0; }
     }
+    nv = plist_unwrap(nv);
     if (nv) {
         if (plist_get_node_type(nv) == PLIST_STRING) plist_get_string_val(nv, &wname);
     }
@@ -363,9 +367,11 @@ static void enable_wifi_connections(idevice_t device) {
     }
     if (value) plist_free(value);
     if (!enabled) {
+        plist_t b = plist_new_bool(1);
         lockdownd_error_t err = lockdownd_set_value(
             ld, "com.apple.mobile.wireless_lockdown", "EnableWifiConnections",
-            plist_new_bool(1));
+            b);
+        plist_free(b);
         dbg("wifi: EnableWifiConnections set, error %d", (int)err);
     }
     lockdownd_client_free(ld);
@@ -404,7 +410,9 @@ static void *watch_run(void *p) {
     /* stagger first query so battery session is established first */
     sleep_while_alive(a->alive, POLL_S);
     while (*a->alive) {
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
         query_watch(a->device);
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
         sleep_while_alive(a->alive, POLL_S);
     }
     pthread_cleanup_pop(1);
@@ -560,7 +568,7 @@ out:
     /* A device can be advertised by usbmuxd twice (USB and Wi-Fi) with the
      * same UDID.  If the USB cable goes away, immediately create a network
      * worker instead of waiting for another add event that may never arrive. */
-    int reconnect_network = dev->network_seen;
+    int reconnect_network = (dev->lookup == IDEVICE_LOOKUP_USBMUX) && dev->network_seen;
     char reconnect_udid[sizeof dev->udid];
     memcpy(reconnect_udid, dev->udid, sizeof reconnect_udid);
     pthread_mutex_lock(&devs_lock);

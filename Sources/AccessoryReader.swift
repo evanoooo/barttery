@@ -170,7 +170,7 @@ class AccessoryReader: NSObject {
             var cfProps: Unmanaged<CFMutableDictionary>?
             guard IORegistryEntryCreateCFProperties(service, &cfProps, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                   let props = cfProps?.takeRetainedValue() as? [String: Any],
-                  let battery = props["BatteryPercent"] as? Int, battery > 0,
+                  let battery = props["BatteryPercent"] as? Int, battery >= 0,
                   let product = props["Product"] as? String, !product.isEmpty
             else { continue }
 

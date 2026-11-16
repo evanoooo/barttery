@@ -1,3 +1,4 @@
+import AppKit
 import IOBluetooth
 import Foundation
 import ObjectiveC
@@ -31,10 +32,29 @@ class BTHeadphonesReader: NSObject {
             selector: #selector(deviceConnected(_:device:))
         )
         read()
+        setupTimer()
+
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(handleSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleWake), name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    private func setupTimer() {
+        timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.read()
         }
         timer?.tolerance = 15
+    }
+
+    @objc private func handleSleep() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @objc private func handleWake() {
+        setupTimer()
+        read()
     }
 
     func readOnce() { read() }
@@ -57,7 +77,7 @@ class BTHeadphonesReader: NSObject {
                 disconnectNotes[key] = n
             }
 
-            if let batteryInfo = readNativeHeadphoneBattery(device), batteryInfo.level > 0, batteryInfo.level <= 100 {
+            if let batteryInfo = readNativeHeadphoneBattery(device), batteryInfo.level >= 0, batteryInfo.level <= 100 {
                 let reading = AccessoryBattery(
                     name: name,
                     level: batteryInfo.level,
@@ -131,8 +151,9 @@ class BTHeadphonesReader: NSObject {
         }
 
         // 3. Fallback to case level if available alone
-        if let c = caseLevel, c > 0, c <= 100 {
-            return BatteryInfo(level: c, charging: true, chargingKnown: true)
+        if let c = caseLevel, c >= 0, c <= 100 {
+            let isChargingVal = readBoolProperty(device, selectors: Self.chargingSelectors)
+            return BatteryInfo(level: c, charging: isChargingVal ?? false, chargingKnown: isChargingVal != nil)
         }
 
         return nil
@@ -141,7 +162,7 @@ class BTHeadphonesReader: NSObject {
     private func readIntProperty(_ obj: AnyObject, selectors: [Selector]) -> Int? {
         for sel in selectors {
             guard obj.responds(to: sel) else { continue }
-            if let val = callIntSelector(obj, sel), val > 0, val <= 100 {
+            if let val = callIntSelector(obj, sel), val >= 0, val <= 100 {
                 return val
             }
         }
@@ -223,22 +244,28 @@ class BTHeadphonesReader: NSObject {
 
     @objc private func deviceConnected(_ note: IOBluetoothUserNotification, device: IOBluetoothDevice) {
         guard let name = device.name, isCandidateHeadphone(name: name, address: device.addressString) else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.read() }
-        let key = (device.addressString ?? name).lowercased()
-        if disconnectNotes[key] == nil,
-           let n = device.register(forDisconnectNotification: self, selector: #selector(deviceDisconnected(_:device:))) {
-            disconnectNotes[key] = n
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let key = (device.addressString ?? name).lowercased()
+            if self.disconnectNotes[key] == nil,
+               let n = device.register(forDisconnectNotification: self, selector: #selector(self.deviceDisconnected(_:device:))) {
+                self.disconnectNotes[key] = n
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.read() }
         }
     }
 
     @objc private func deviceDisconnected(_ note: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        let key = (device.addressString ?? device.name ?? "").lowercased()
-        if !key.isEmpty {
-            disconnectNotes.removeValue(forKey: key)?.unregister()
-        } else {
-            note.unregister()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let key = (device.addressString ?? device.name ?? "").lowercased()
+            if !key.isEmpty {
+                self.disconnectNotes.removeValue(forKey: key)?.unregister()
+            } else {
+                note.unregister()
+            }
+            self.read()
         }
-        read()
     }
 
     deinit {
@@ -247,5 +274,6 @@ class BTHeadphonesReader: NSObject {
         connectNote?.unregister()
         disconnectNotes.values.forEach { $0.unregister() }
         disconnectNotes.removeAll()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 }

@@ -19,6 +19,7 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     private var battChars:       [UUID: CBCharacteristic] = [:]
     private var levels:          [UUID: Int]            = [:]
     private var previousLevels:  [UUID: Int]            = [:]
+    private var outlierCounts:   [UUID: Int]            = [:]
     private var chargingStates:  [UUID: Bool]           = [:]
     private var measurementDates: [UUID: Date]         = [:]
 
@@ -41,8 +42,11 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     deinit {
-        for p in peripherals.values where p.state == .connected || p.state == .connecting {
-            central?.cancelPeripheralConnection(p)
+        for p in peripherals.values {
+            p.delegate = nil
+            if p.state == .connected || p.state == .connecting {
+                central?.cancelPeripheralConnection(p)
+            }
         }
     }
 
@@ -67,6 +71,9 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         }
         for id in staleIDs {
             remove(id)
+        }
+        if !staleIDs.isEmpty {
+            publish()
         }
     }
 
@@ -164,9 +171,15 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     @discardableResult
     func recordBatteryLevel(_ newLevel: Int, for id: UUID, at date: Date = Date()) -> Bool {
         // Reject obviously invalid readings: below 5% (device would disconnect before reaching
-        // this level in practice) or an impossible sudden drop of >50 points in one reading.
+        // this level in practice). If an apparent sudden drop of >50 points occurs, require 2
+        // consecutive confirmations to prevent latch-up when a device genuinely drained while away.
         guard (5...100).contains(newLevel) else { return false }
-        if let prev = previousLevels[id], newLevel < prev - 50 { return false }
+        if let prev = previousLevels[id], newLevel < prev - 50 {
+            let count = (outlierCounts[id] ?? 0) + 1
+            outlierCounts[id] = count
+            if count < 2 { return false }
+        }
+        outlierCounts[id] = 0
         // Infer charging from trend: if level rose since the last reading, the device is charging.
         if let prev = previousLevels[id] {
             if newLevel > prev      { chargingStates[id] = true  }
@@ -185,10 +198,16 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     private func remove(_ id: UUID) {
-        peripherals.removeValue(forKey: id)
+        if let p = peripherals.removeValue(forKey: id) {
+            p.delegate = nil
+            if p.state == .connected || p.state == .connecting {
+                central?.cancelPeripheralConnection(p)
+            }
+        }
         battChars.removeValue(forKey: id)
         levels.removeValue(forKey: id)
         previousLevels.removeValue(forKey: id)
+        outlierCounts.removeValue(forKey: id)
         chargingStates.removeValue(forKey: id)
         measurementDates.removeValue(forKey: id)
     }

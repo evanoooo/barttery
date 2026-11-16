@@ -54,10 +54,10 @@ typedef struct {
 
 static Dev devs[MAX_DEVS];
 
-static void cfstr(CFStringRef value, char *out, size_t cap) {
+static void cfstr(CFTypeRef value, char *out, size_t cap) {
     out[0] = '\0';
-    if (value)
-        CFStringGetCString(value, out, cap, kCFStringEncodingUTF8);
+    if (value && CFGetTypeID(value) == CFStringGetTypeID())
+        CFStringGetCString((CFStringRef)value, out, cap, kCFStringEncodingUTF8);
 }
 
 static void json_string(char *dst, size_t cap, const char *src) {

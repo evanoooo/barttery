@@ -370,10 +370,15 @@ private struct BatteryTimelineChart: View {
                             let ratio = min(max(location.x / chartW, 0), 0.999)
                             let index = Int(ratio * CGFloat(buckets.count))
                             if buckets.indices.contains(index) {
-                                hoveredBucket = buckets[index]
+                                let target = buckets[index]
+                                if hoveredBucket != target {
+                                    hoveredBucket = target
+                                }
                             }
                         case .ended:
-                            hoveredBucket = nil
+                            if hoveredBucket != nil {
+                                hoveredBucket = nil
+                            }
                         }
                     }
 
@@ -601,10 +606,15 @@ private struct BatterySevenDaysLineChart: View {
                             let ratio = min(max(location.x / chartW, 0), 0.999)
                             let index = Int(ratio * CGFloat(buckets.count))
                             if buckets.indices.contains(index) {
-                                hoveredBucket = buckets[index]
+                                let target = buckets[index]
+                                if hoveredBucket != target {
+                                    hoveredBucket = target
+                                }
                             }
                         case .ended:
-                            hoveredBucket = nil
+                            if hoveredBucket != nil {
+                                hoveredBucket = nil
+                            }
                         }
                     }
 

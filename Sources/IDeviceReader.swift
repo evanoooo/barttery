@@ -61,12 +61,9 @@ class IDeviceReader: NSObject {
             self?.checkStale()
         }
         staleTimer?.tolerance = 3
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(onWake),
-            name: NSWorkspace.didWakeNotification,
-            object: nil
-        )
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(onSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(onWake), name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     deinit {
@@ -81,7 +78,22 @@ class IDeviceReader: NSObject {
         }
     }
 
+    @objc private func onSleep() {
+        staleTimer?.invalidate()
+        staleTimer = nil
+        for proc in [bartbeat, mobilebeat, wifiwatch] {
+            if let proc, proc.isRunning {
+                proc.terminate()
+            }
+        }
+    }
+
     @objc private func onWake() {
+        staleTimer?.invalidate()
+        staleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.checkStale()
+        }
+        staleTimer?.tolerance = 3
         lastBartbeatRestart = nil  // bypass cooldown on wake
         restartBartbeat()
     }
@@ -479,12 +491,18 @@ class IDeviceReader: NSObject {
             restartBartbeat()
         }
 
-        // Keep trying to recover when a known phone/pad hasn't synced recently,
+        // Keep trying to recover when ALL known phones/pads have stopped syncing,
         // even if bartbeat is still emitting non-battery noise (connected/etc).
         // Uses in-memory cached timestamps to avoid hammering UserDefaults every 15s.
+        // Never restart if at least one paired device is actively syncing (e.g. an iPad is away from home).
         let phoneSyncAge = phoneSyncTime.map { now.timeIntervalSince($0) }
         let padSyncAge = padSyncTime.map { now.timeIntervalSince($0) }
-        if !silent, (phoneSyncAge ?? 0) > deviceTimeout || (padSyncAge ?? 0) > deviceTimeout {
+        let hasPhone = phoneSyncTime != nil
+        let hasPad   = padSyncTime != nil
+        let phoneSyncStale = phoneSyncAge.map { $0 > deviceTimeout } ?? false
+        let padSyncStale   = padSyncAge.map   { $0 > deviceTimeout } ?? false
+        let allPairedStale = (hasPhone || hasPad) && (!hasPhone || phoneSyncStale) && (!hasPad || padSyncStale)
+        if !silent, allPairedStale {
             restartBartbeat()
         }
 
@@ -530,24 +548,33 @@ class IDeviceReader: NSObject {
             sema.signal()
         }
 
-        do {
-            var outputData = Data()
-            let readQueue = DispatchQueue(label: "me.yura.barttery.pipeRead", qos: .utility)
-            let readGroup = DispatchGroup()
-            readGroup.enter()
-            readQueue.async {
-                outputData = out.fileHandleForReading.readDataToEndOfFile()
-                readGroup.leave()
-            }
+        var outputData = Data()
+        let lock = NSLock()
+        let readQueue = DispatchQueue(label: "me.yura.barttery.pipeRead", qos: .utility)
+        let readGroup = DispatchGroup()
+        readGroup.enter()
+        readQueue.async {
+            let d = out.fileHandleForReading.readDataToEndOfFile()
+            lock.lock()
+            outputData = d
+            lock.unlock()
+            readGroup.leave()
+        }
 
+        do {
             try proc.run()
             let waitResult = sema.wait(timeout: .now() + timeout)
             if waitResult == .timedOut && proc.isRunning {
                 Self.stopTimedOutHelper(proc)
             }
+            try? out.fileHandleForWriting.close()
             _ = readGroup.wait(timeout: .now() + 1.0)
-            return String(data: outputData, encoding: .utf8) ?? ""
+            lock.lock()
+            let res = String(data: outputData, encoding: .utf8) ?? ""
+            lock.unlock()
+            return res
         } catch {
+            try? out.fileHandleForWriting.close()
             return ""
         }
     }

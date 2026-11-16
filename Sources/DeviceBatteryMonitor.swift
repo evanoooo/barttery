@@ -52,6 +52,7 @@ class DeviceBatteryMonitor: ObservableObject {
     private var isPopupOpen:     Bool = false
     private var iconCancellable: AnyCancellable?
     private var wakeObserver:    NSObjectProtocol?
+    private var sleepObserver:   NSObjectProtocol?
     private var lastIconKey:     (level: Int?, state: ChargeState?, showPct: Bool)?
 
     // Separate buckets merged into `accessories` for display.
@@ -81,6 +82,15 @@ class DeviceBatteryMonitor: ObservableObject {
             self.refresh()
         }
         refreshTimer?.tolerance = 30
+
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSleep()
+        }
+
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
         // for as long as the Mac was asleep. Force an immediate re-poll on wake.
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -89,6 +99,7 @@ class DeviceBatteryMonitor: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            self.setupRefreshTimer()
             self.macReader?.readNow()
             self.pruneStaleSyncTimes()
             // Stagger peripheral refresh by 5s to allow Bluetooth stack to ready
@@ -102,6 +113,24 @@ class DeviceBatteryMonitor: ObservableObject {
         }
     }
 
+    private func setupRefreshTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            guard let self, !self.isPopupOpen else { return }
+            self.refresh()
+        }
+        refreshTimer?.tolerance = 30
+    }
+
+    private func handleSleep() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+        retryTimer?.invalidate()
+        retryTimer = nil
+        refreshEndWork?.cancel()
+        refreshEndWork = nil
+    }
+
     deinit {
         refreshTimer?.invalidate()
         retryTimer?.invalidate()
@@ -109,6 +138,9 @@ class DeviceBatteryMonitor: ObservableObject {
         iconCancellable?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
+        if let sleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
         }
     }
 
@@ -167,6 +199,7 @@ class DeviceBatteryMonitor: ObservableObject {
                 self.refresh()
             }
         }
+        retryTimer?.tolerance = 1.0
     }
 
     func onPopupClose() {

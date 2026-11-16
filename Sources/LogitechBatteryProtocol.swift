@@ -39,7 +39,7 @@ enum LogitechBatteryFeature: UInt16, CaseIterable {
         var reportsLevel = true
         if status == 3 {
             level = 100
-        } else if raw > 0 {
+        } else if (1...100).contains(raw) {
             level = raw
         } else if self == .unified, let approximate = [1: 5, 2: 20, 4: 50, 8: 100][Int(bytes[1])] {
             level = approximate
@@ -123,6 +123,10 @@ enum LogitechReply {
         }
         // HID++ 2.0 errors echo the feature and function of the failed request.
         if bytes.count >= 6, bytes[2] == 0xFF, bytes[3] == feature, bytes[4] == function {
+            return .failure(.deviceError)
+        }
+        // HID++ 1.0 error packet (0x8F) returns an immediate error to avoid 400ms timeout hangs
+        if bytes.count >= 5, bytes[2] == 0x8F {
             return .failure(.deviceError)
         }
         return nil

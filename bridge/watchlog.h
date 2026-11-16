@@ -5,10 +5,9 @@
 #include <string.h>
 #include <ctype.h>
 
-/* Registry success is not evidence of a live charger state. Background mode
- * must also listen for transitions; one-shot mode streams only as fallback. */
+/* Only stream syslog if the direct companion registry query failed */
 static int watchlog_should_stream(int registry_result, int once) {
-    return registry_result != 0 || !once;
+    return registry_result != 0;
 }
 
 /* Only accept a present Watch power-source update, never phone/AirPods data. */

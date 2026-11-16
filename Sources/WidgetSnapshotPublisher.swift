@@ -9,10 +9,12 @@ final class WidgetSnapshotPublisher {
     private var settingsObserver: NSObjectProtocol?
     private var refreshObserver: NSObjectProtocol?
     private var pendingReload: DispatchWorkItem?
+    private var pendingPublishWork: DispatchWorkItem?
     private var lastReload = Date.distantPast
     private var hasPublishedSnapshot = false
     private var lastWrittenDevices: [WidgetBatteryDevice] = []
     private var lastWrittenAt = Date.distantPast
+    private static let minDiskWriteInterval: TimeInterval = 15
     private static let logger = Logger(subsystem: "com.yura.barttery", category: "Widget")
 
     init(monitor: DeviceBatteryMonitor) {
@@ -46,6 +48,7 @@ final class WidgetSnapshotPublisher {
 
     deinit {
         pendingReload?.cancel()
+        pendingPublishWork?.cancel()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
@@ -72,26 +75,48 @@ final class WidgetSnapshotPublisher {
         let now = Date()
         let snapshot = monitor.widgetSnapshot(at: now)
         let contentChanged = !devicesContentMatches(snapshot.devices, lastWrittenDevices)
-        if !force, hasPublishedSnapshot, !contentChanged,
-           now.timeIntervalSince(lastWrittenAt) < 300 {
-            return
-        }
-        do {
-            try WidgetSnapshotStore.write(snapshot)
-            lastWrittenDevices = snapshot.devices
-            lastWrittenAt = now
-            if !hasPublishedSnapshot || force {
-                hasPublishedSnapshot = true
-                pendingReload?.cancel()
-                pendingReload = nil
-                lastReload = now
-                Self.reloadAllWidgets()
-            } else if contentChanged {
-                requestReload()
+        if !force, hasPublishedSnapshot {
+            if !contentChanged && now.timeIntervalSince(lastWrittenAt) < 300 {
+                return
             }
-        } catch {
-            let path = WidgetSnapshotStore.fileURL?.path ?? "nil"
-            Self.logger.error("Cannot save widget snapshot: \(error.localizedDescription, privacy: .public) [fopenErr=\(WidgetSnapshotStore.lastFopenErrno), path=\(path, privacy: .public)]")
+            if contentChanged && now.timeIntervalSince(lastWrittenAt) < Self.minDiskWriteInterval {
+                let remaining = Self.minDiskWriteInterval - now.timeIntervalSince(lastWrittenAt)
+                if pendingPublishWork == nil {
+                    let work = DispatchWorkItem { [weak self, weak monitor] in
+                        guard let self, let monitor else { return }
+                        self.pendingPublishWork = nil
+                        self.publish(monitor)
+                    }
+                    pendingPublishWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
+                }
+                return
+            }
+        }
+        pendingPublishWork?.cancel()
+        pendingPublishWork = nil
+        lastWrittenDevices = snapshot.devices
+        lastWrittenAt = now
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                try WidgetSnapshotStore.write(snapshot)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if !self.hasPublishedSnapshot || force {
+                        self.hasPublishedSnapshot = true
+                        self.pendingReload?.cancel()
+                        self.pendingReload = nil
+                        self.lastReload = Date()
+                        Self.reloadAllWidgets()
+                    } else if contentChanged {
+                        self.requestReload()
+                    }
+                }
+            } catch {
+                let path = WidgetSnapshotStore.fileURL?.path ?? "nil"
+                Self.logger.error("Cannot save widget snapshot: \(error.localizedDescription, privacy: .public) [fopenErr=\(WidgetSnapshotStore.lastFopenErrno), path=\(path, privacy: .public)]")
+            }
         }
     }
 

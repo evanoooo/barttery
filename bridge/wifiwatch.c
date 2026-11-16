@@ -214,7 +214,7 @@ static void browse_cb(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t ifInd
         return;
 
     int fd = DNSServiceRefSockFD(r);
-    for (int i = 0; i < 40 && !g_found; i++) {
+    for (int i = 0; i < 5 && !g_found; i++) {
         fd_set f;
         FD_ZERO(&f); FD_SET(fd, &f);
         struct timeval tv = { 0, 100000 };
@@ -254,7 +254,7 @@ static int discover_ips(void) {
             continue;
 
         int fd = DNSServiceRefSockFD(browse);
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < 10; i++) {
             fd_set f;
             FD_ZERO(&f); FD_SET(fd, &f);
             struct timeval tv = { 0, 100000 };
@@ -621,22 +621,42 @@ static int read_watch(wifi_state_t *st, const char *udid, const char *ip_overrid
                 break;
             }
             case 2: {
-                uint64_t u = 0;
-                if (plist_get_node_type(val) == PLIST_UINT) {
-                    plist_get_uint_val(val, &u);
-                    *level = (int)u;
-                } else {
-                    int64_t sval = 0;
-                    plist_get_int_val(val, &sval);
-                    *level = (int)sval;
+                int parsed_lvl = -1;
+                plist_t unwrapped = val;
+                if (plist_get_node_type(val) == PLIST_ARRAY && plist_array_get_size(val) > 0)
+                    unwrapped = plist_array_get_item(val, 0);
+                plist_type pt = plist_get_node_type(unwrapped);
+                if (pt == PLIST_UINT) {
+                    uint64_t u = 0; plist_get_uint_val(unwrapped, &u); parsed_lvl = (int)u;
+                } else if (pt == PLIST_INT) {
+                    int64_t sval = 0; plist_get_int_val(unwrapped, &sval); parsed_lvl = (int)sval;
+                } else if (pt == PLIST_STRING) {
+                    char *s = NULL; plist_get_string_val(unwrapped, &s);
+                    if (s) { parsed_lvl = atoi(s); free(s); }
                 }
-                got_level = 1;
+                if (parsed_lvl >= 0 && parsed_lvl <= 100) {
+                    *level = parsed_lvl;
+                    got_level = 1;
+                }
                 break;
             }
-            case 3:
-                if (plist_get_node_type(val) == PLIST_BOOLEAN)
-                    *charging = plist_bool_val_is_true(val) ? 1 : 0;
+            case 3: {
+                plist_t unwrapped = val;
+                if (plist_get_node_type(val) == PLIST_ARRAY && plist_array_get_size(val) > 0)
+                    unwrapped = plist_array_get_item(val, 0);
+                plist_type pt = plist_get_node_type(unwrapped);
+                if (pt == PLIST_BOOLEAN)
+                    *charging = plist_bool_val_is_true(unwrapped) ? 1 : 0;
+                else if (pt == PLIST_STRING) {
+                    char *s = NULL; plist_get_string_val(unwrapped, &s);
+                    if (s) { *charging = (s[0] == '1' || s[0] == 't' || s[0] == 'T') ? 1 : 0; free(s); }
+                } else if (pt == PLIST_UINT) {
+                    uint64_t u = 0; plist_get_uint_val(unwrapped, &u); *charging = u ? 1 : 0;
+                } else if (pt == PLIST_INT) {
+                    int64_t i = 0; plist_get_int_val(unwrapped, &i); *charging = i ? 1 : 0;
+                }
                 break;
+            }
             }
         }
         plist_free(resp);
@@ -649,6 +669,8 @@ static int read_watch(wifi_state_t *st, const char *udid, const char *ip_overrid
 /* ── JSON output ─────────────────────────────────────────────────────────── */
 
 static void json_escape(const char *in, char *out, size_t outlen) {
+    if (!out || outlen == 0) return;
+    if (!in) { out[0] = '\0'; return; }
     size_t o = 0;
     for (const unsigned char *p = (const unsigned char *)in; *p && o + 6 < outlen; p++) {
         if (*p == '"' || *p == '\\') { out[o++] = '\\'; out[o++] = (char)*p; }
@@ -751,7 +773,7 @@ static int stream_watch(wifi_state_t *st, const char *udid, const char *ip_hint,
         return -1;
     }
     dbg("listening for live Watch power-source events");
-    time_t stream_duration = once ? 25 : 180;
+    time_t stream_duration = once ? 10 : 30;
     time_t deadline = time(NULL) + stream_duration;
     time_t next_heartbeat = 0;
     time_t next_phone_poll = time(NULL) + POLL_S;
