@@ -227,6 +227,26 @@ private struct MenuBarWindowHeightAnimator: View, Animatable {
 private struct MenuBarWindowHeightSync: NSViewRepresentable {
     let contentHeight: CGFloat
 
+    private static let cornerRadiusSelectors = [
+        "_setCornerRadius:",
+        "_setEffectiveCornerRadius:",
+        "_setTopCornerRadius:",
+        "_setBottomCornerRadius:"
+    ].map(NSSelectorFromString)
+
+    private static let cornerMaskSelectors = [
+        "_updateCornerMask",
+        "_cornerMaskChanged"
+    ].map(NSSelectorFromString)
+
+    final class Coordinator {
+        weak var configuredWindow: NSWindow?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let effect = NSVisualEffectView()
         effect.material = .popover
@@ -240,8 +260,12 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        let coordinator = context.coordinator
         let apply = {
-            Self.applyWindowShape(probe: nsView)
+            if let window = nsView.window, coordinator.configuredWindow !== window {
+                Self.applyWindowShape(probe: nsView)
+                coordinator.configuredWindow = window
+            }
             Self.resize(window: nsView.window, contentHeight: contentHeight)
         }
         if nsView.window == nil {
@@ -249,6 +273,10 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
         } else {
             apply()
         }
+    }
+
+    static func dismantleNSView(_ nsView: NSVisualEffectView, coordinator: Coordinator) {
+        coordinator.configuredWindow = nil
     }
 
     private static func applyWindowShape(probe: NSView) {
@@ -292,13 +320,7 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
 
     private static func setWindowCornerRadius(_ window: NSWindow, _ radius: CGFloat) {
         guard let cls: AnyClass = object_getClass(window) else { return }
-        for name in [
-            "_setCornerRadius:",
-            "_setEffectiveCornerRadius:",
-            "_setTopCornerRadius:",
-            "_setBottomCornerRadius:"
-        ] {
-            let sel = NSSelectorFromString(name)
+        for sel in cornerRadiusSelectors {
             guard let method = class_getInstanceMethod(cls, sel) else { continue }
             let fn = unsafeBitCast(
                 method_getImplementation(method),
@@ -306,8 +328,7 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
             )
             fn(window, sel, radius)
         }
-        for name in ["_updateCornerMask", "_cornerMaskChanged"] {
-            let sel = NSSelectorFromString(name)
+        for sel in cornerMaskSelectors {
             if window.responds(to: sel) { window.perform(sel) }
         }
     }
@@ -321,7 +342,7 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
             contentHeight + chrome,
             max(120, top - screenMinY)
         )
-        guard abs(capped - window.frame.height) > 0.05 else { return }
+        guard abs(capped - window.frame.height) > 0.5 else { return }
         var frame = window.frame
         frame.size.height = capped
         frame.origin.y = top - capped
@@ -929,6 +950,20 @@ struct NotificationThresholdRow: View {
         return monitor.syncTimes[device.rawValue]
     }
 
+    private var targetWidgetId: String {
+        if let accessory {
+            return "accessory.\(accessory.name)"
+        }
+        switch device {
+        case .mac:        return "mac"
+        case .phone:      return "phone"
+        case .pad:        return "pad"
+        case .watch:      return "watch"
+        case .airPods:    return "airpods"
+        default:          return "accessory"
+        }
+    }
+
     private var rules: DeviceNotificationRules {
         settings.rules(for: device)
     }
@@ -981,7 +1016,17 @@ struct NotificationThresholdRow: View {
                 }
 
                 Button {
-                    SettingsWindowController.shared.show(selectedDevice: device)
+                    SettingsWindowController.shared.show(selectedDevice: device, tab: .widget)
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 11))
+                        .foregroundColor(settings.isDeviceEnabledForWidget(id: targetWidgetId) ? .accentColor : .secondary.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help(L10n.tr("widget.show_in_widget"))
+
+                Button {
+                    SettingsWindowController.shared.show(selectedDevice: device, tab: .notifications)
                 } label: {
                     Image(systemName: "gearshape")
                         .font(.system(size: 11))
@@ -1094,6 +1139,28 @@ struct NotificationThresholdRow: View {
                     }
                 }
             }
+
+            // Quick toggle for Widget display
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 10))
+                    .foregroundColor(settings.isDeviceEnabledForWidget(id: targetWidgetId) ? .accentColor : .secondary)
+
+                Text(L10n.tr("widget.show_in_widget"))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { settings.isDeviceEnabledForWidget(id: targetWidgetId) },
+                    set: { _ in settings.toggleDeviceForWidget(id: targetWidgetId) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .scaleEffect(0.65)
+            }
+            .padding(.top, 2)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

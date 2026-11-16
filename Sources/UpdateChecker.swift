@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -13,23 +14,37 @@ class UpdateChecker {
         check()
     }
 
-    static func check() {
+    static func check(manual: Bool = false) {
         var req = URLRequest(url: releasesURL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tag  = json["tag_name"] as? String
-            else { return }
+            else {
+                if manual {
+                    openReleasesPage()
+                }
+                return
+            }
 
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastCheckKey)
 
             let latest  = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-            guard isNewer(latest, than: current) else { return }
-
-            DispatchQueue.main.async { notify(version: latest) }
+            if isNewer(latest, than: current) {
+                DispatchQueue.main.async { notify(version: latest) }
+            } else if manual {
+                openReleasesPage()
+            }
         }.resume()
+    }
+
+    private static func openReleasesPage() {
+        guard let url = URL(string: releasesPageURL) else { return }
+        DispatchQueue.main.async {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private static func notify(version: String) {

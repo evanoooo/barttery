@@ -6,9 +6,12 @@ import WidgetKit
 /// Only the host app talks to hardware. The extension consumes an atomic JSON snapshot.
 final class WidgetSnapshotPublisher {
     private var changes: AnyCancellable?
+    private var settingsObserver: NSObjectProtocol?
     private var pendingReload: DispatchWorkItem?
     private var lastReload = Date.distantPast
     private var hasPublishedSnapshot = false
+    private var lastWrittenDevices: [WidgetBatteryDevice] = []
+    private var lastWrittenAt = Date.distantPast
     private static let logger = Logger(subsystem: "com.yura.barttery", category: "Widget")
 
     init(monitor: DeviceBatteryMonitor) {
@@ -18,19 +21,56 @@ final class WidgetSnapshotPublisher {
                 guard let self, let monitor else { return }
                 self.publish(monitor)
             }
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .widgetSettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self, weak monitor] _ in
+            guard let self, let monitor else { return }
+            self.publish(monitor, force: true)
+            Self.reloadAllWidgets()
+        }
+
         publish(monitor)
     }
 
-    deinit { pendingReload?.cancel() }
+    deinit {
+        pendingReload?.cancel()
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+    }
 
-    private func publish(_ monitor: DeviceBatteryMonitor) {
+    private func devicesContentMatches(_ lhs: [WidgetBatteryDevice], _ rhs: [WidgetBatteryDevice]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (a, b) in zip(lhs, rhs) {
+            if a.id != b.id || a.name != b.name || a.symbol != b.symbol ||
+               a.level != b.level || a.isCharging != b.isCharging ||
+               a.isPaused != b.isPaused || a.chargingKnown != b.chargingKnown {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func publish(_ monitor: DeviceBatteryMonitor, force: Bool = false) {
         // The plain SwiftPM/DMG build deliberately has no App Group entitlement.
         guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool != false else { return }
+        let now = Date()
+        let snapshot = monitor.widgetSnapshot(at: now)
+        if !force, hasPublishedSnapshot,
+           devicesContentMatches(snapshot.devices, lastWrittenDevices),
+           now.timeIntervalSince(lastWrittenAt) < 60 {
+            return
+        }
         do {
-            try WidgetSnapshotStore.write(monitor.widgetSnapshot())
+            try WidgetSnapshotStore.write(snapshot)
+            lastWrittenDevices = snapshot.devices
+            lastWrittenAt = now
             if !hasPublishedSnapshot {
                 hasPublishedSnapshot = true
-                lastReload = Date()
+                lastReload = now
                 Self.reloadAllWidgets()
             } else {
                 requestReload()
@@ -83,25 +123,29 @@ extension DeviceBatteryMonitor {
         }
         append("phone", displayPhoneName, "iphone", phoneBattery, phoneCharging,
                updatedAt: syncTimes[BatteryDevice.phone.rawValue] ?? date)
-        append("pad", padName, "ipad", padBattery, padCharging,
-               updatedAt: syncTimes[BatteryDevice.pad.rawValue] ?? date)
         if let pods = airPodsBattery {
             // One ring for the earbuds, using the lower available level.
             let level = [pods.left, pods.right].compactMap { $0 }.min()
             let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? date
             append("airpods", displayAirPodsName, "airpods", level,
                    pods.leftCharging || pods.rightCharging, updatedAt: updatedAt)
-            append("airpods.case", "\(displayAirPodsName) Case", "airpods.chargingcase", pods.case,
-                   pods.caseCharging, updatedAt: updatedAt)
         }
         if let watch = watchBattery {
             append("watch", watch.name, "applewatch", watch.level, watch.isCharging,
                    updatedAt: watch.updatedAt, chargingKnown: watch.chargingKnown)
         }
+        if let pods = airPodsBattery {
+            let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? date
+            append("airpods.case", "\(displayAirPodsName) Case", "airpods.chargingcase", pods.case,
+                   pods.caseCharging, updatedAt: updatedAt)
+        }
+        append("pad", padName, "ipad", padBattery, padCharging,
+               updatedAt: syncTimes[BatteryDevice.pad.rawValue] ?? date)
         for accessory in accessories {
             devices.append(WidgetBatteryDevice(accessory: accessory))
         }
-        return WidgetBatterySnapshot(devices: devices, writtenAt: date)
+        let filteredDevices = AppSettings.shared.filterDevicesForWidget(devices)
+        return WidgetBatterySnapshot(devices: filteredDevices, writtenAt: date)
     }
 }
 

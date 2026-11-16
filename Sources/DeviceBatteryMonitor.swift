@@ -49,6 +49,8 @@ class DeviceBatteryMonitor: ObservableObject {
     private var refreshTimer:    Timer?
     private var retryTimer:      Timer?
     private var iconCancellable: AnyCancellable?
+    private var wakeObserver:    NSObjectProtocol?
+    private var lastIconKey:     (level: Int?, state: ChargeState?, showPct: Bool)?
 
     // Separate buckets merged into `accessories` for display.
     private var appleAccessories: [AccessoryBattery] = []
@@ -78,7 +80,7 @@ class DeviceBatteryMonitor: ObservableObject {
         refreshTimer?.tolerance = 15
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
         // for as long as the Mac was asleep. Force an immediate re-poll on wake.
-        NSWorkspace.shared.notificationCenter.addObserver(
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
@@ -94,6 +96,15 @@ class DeviceBatteryMonitor: ObservableObject {
                 self?.btHeadphonesReader?.readOnce()
                 self?.ideviceReader?.scanNow()
             }
+        }
+    }
+
+    deinit {
+        refreshTimer?.invalidate()
+        retryTimer?.invalidate()
+        iconCancellable?.cancel()
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
     }
 
@@ -124,11 +135,21 @@ class DeviceBatteryMonitor: ObservableObject {
             ideviceReader?.forceReconnect()
         }
         refresh()
+        retryTimer?.invalidate()
+        retryTimer = nil
         var attempts = 0
         retryTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             attempts += 1
-            if attempts >= 3 || self.syncTimes.values.contains(where: { $0 > openTime }) {
+            let hasFreshUpdate: Bool
+            if needsKick {
+                let phoneFresh = self.syncTimes[BatteryDevice.phone.rawValue].map { $0 > openTime } ?? false
+                let watchFresh = self.syncTimes[BatteryDevice.watch.rawValue].map { $0 > openTime } ?? false
+                hasFreshUpdate = phoneFresh || watchFresh
+            } else {
+                hasFreshUpdate = self.syncTimes.values.contains(where: { $0 > openTime })
+            }
+            if attempts >= 3 || hasFreshUpdate {
                 t.invalidate()
                 self.retryTimer = nil
             } else {
@@ -169,9 +190,12 @@ class DeviceBatteryMonitor: ObservableObject {
     private func setupMac() {
         let reader = MacBatteryReader()
         reader.onUpdate = { [weak self] battery in
-            self?.macBatteryUpdatedAt = battery == nil ? nil : Date()
-            self?.macBattery = battery
-            self?.rebuildIcon()
+            guard let self else { return }
+            self.macBatteryUpdatedAt = battery == nil ? nil : Date()
+            if self.macBattery != battery {
+                self.macBattery = battery
+                self.rebuildIcon()
+            }
             if let battery = battery {
                 NotificationManager.shared.check(
                     device: .mac,
@@ -189,55 +213,63 @@ class DeviceBatteryMonitor: ObservableObject {
         let reader = IDeviceReader()
 
         reader.onPhoneUpdate = { [weak self] level, charging, name in
-            DispatchQueue.main.async {
-                self?.phoneBattery  = level
-                self?.phoneCharging = charging ?? false
-                if let name { self?.phoneName = name }
+            let apply = {
+                guard let self else { return }
+                let newCharging = charging ?? false
+                if self.phoneBattery != level { self.phoneBattery = level }
+                if self.phoneCharging != newCharging { self.phoneCharging = newCharging }
+                if let name, self.phoneName != name { self.phoneName = name }
                 if let level {
-                    self?.syncTimes[BatteryDevice.phone.rawValue] = Date()
+                    self.syncTimes[BatteryDevice.phone.rawValue] = Date()
                     NotificationManager.shared.check(
                         device: .phone,
                         level: level,
-                        isCharging: charging ?? false
+                        isCharging: newCharging
                     )
                 } else {
-                    self?.syncTimes.removeValue(forKey: BatteryDevice.phone.rawValue)
+                    self.syncTimes.removeValue(forKey: BatteryDevice.phone.rawValue)
                 }
             }
+            if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
         }
 
         reader.onPadUpdate = { [weak self] level, charging, name in
-            DispatchQueue.main.async {
-                self?.padBattery  = level
-                self?.padCharging = charging ?? false
-                if let name { self?.padName = name }
+            let apply = {
+                guard let self else { return }
+                let newCharging = charging ?? false
+                if self.padBattery != level { self.padBattery = level }
+                if self.padCharging != newCharging { self.padCharging = newCharging }
+                if let name, self.padName != name { self.padName = name }
                 if let level {
-                    self?.syncTimes[BatteryDevice.pad.rawValue] = Date()
+                    self.syncTimes[BatteryDevice.pad.rawValue] = Date()
                     NotificationManager.shared.check(
                         device: .pad,
                         level: level,
-                        isCharging: charging ?? false
+                        isCharging: newCharging
                     )
                 } else {
-                    self?.syncTimes.removeValue(forKey: BatteryDevice.pad.rawValue)
+                    self.syncTimes.removeValue(forKey: BatteryDevice.pad.rawValue)
                 }
             }
+            if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
         }
 
         reader.onWatchUpdate = { [weak self] watch in
-            DispatchQueue.main.async {
-                self?.watchBattery = watch
+            let apply = {
+                guard let self else { return }
+                if self.watchBattery != watch { self.watchBattery = watch }
                 if let watch {
-                    self?.syncTimes[BatteryDevice.watch.rawValue] = watch.updatedAt
+                    self.syncTimes[BatteryDevice.watch.rawValue] = watch.updatedAt
                     NotificationManager.shared.check(
                         device: .watch,
                         level: watch.level,
                         isCharging: watch.isCharging
                     )
                 } else {
-                    self?.syncTimes.removeValue(forKey: BatteryDevice.watch.rawValue)
+                    self.syncTimes.removeValue(forKey: BatteryDevice.watch.rawValue)
                 }
             }
+            if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
         }
 
         reader.start()
@@ -275,18 +307,26 @@ class DeviceBatteryMonitor: ObservableObject {
         }
         let reader = AirPodsReader()
         reader.onConnect = { [weak self] name in
-            self?.airPodsName = name
-            UserDefaults.standard.set(name, forKey: "airPods.lastName")
+            guard let self else { return }
+            if self.airPodsName != name {
+                self.airPodsName = name
+                UserDefaults.standard.set(name, forKey: "airPods.lastName")
+            }
         }
         reader.onUpdate = { [weak self] battery in
             guard let self else { return }
             if let battery {
-                self.airPodsBattery = battery
-                self.airPodsConnected = reader.isConnected
+                if self.airPodsBattery != battery {
+                    self.airPodsBattery = battery
+                }
+                let connected = reader.isConnected
+                if self.airPodsConnected != connected {
+                    self.airPodsConnected = connected
+                }
                 self.syncTimes[BatteryDevice.airPods.rawValue] = Date()
                 saveCachedAirPodsBattery(battery)
             }
-            if let name = reader.deviceName {
+            if let name = reader.deviceName, self.airPodsName != name {
                 self.airPodsName = name
                 UserDefaults.standard.set(name, forKey: "airPods.lastName")
             }
@@ -427,10 +467,13 @@ class DeviceBatteryMonitor: ObservableObject {
             !bleNames.contains($0.name) &&
             !ownedNames.contains($0.name)
         }
-        accessories = (appleAccessories + logiOnly + bleOnly + btOnly).map { item in
+        let merged = (appleAccessories + logiOnly + bleOnly + btOnly).map { item in
             let canonical = bleLogiMapping[item.name] ?? LogitechReader.canonicalName(for: item.name) ?? item.name
             return logiChargingCache.applying(to: item, canonicalName: canonical)
         }.sorted { $0.name < $1.name }
+        if accessories != merged {
+            accessories = merged
+        }
     }
 
     /// Renames Logitech items using connected IOBluetooth peripheral-class devices.
@@ -458,11 +501,17 @@ class DeviceBatteryMonitor: ObservableObject {
     // MARK: - Icon
 
     private func rebuildIcon() {
+        let showPct = AppSettings.shared.showPercentageInMenuBar
+        let key = (macBattery?.level, macBattery?.state, showPct)
+        if let last = lastIconKey, last == key {
+            return
+        }
+        lastIconKey = key
         guard let mac = macBattery else {
             menuBarIcon = renderPlugIcon()
             return
         }
-        if AppSettings.shared.showPercentageInMenuBar {
+        if showPct {
             menuBarIcon = renderBatteryIcon(level: mac.level, state: mac.state)
         } else {
             menuBarIcon = renderSymbolBatteryIcon(level: mac.level, state: mac.state)

@@ -9,7 +9,7 @@ enum ChargeState {
     case plugged  // on AC, fully charged
 }
 
-struct MacBattery {
+struct MacBattery: Equatable {
     let level: Int
     let state: ChargeState
     let cycleCount: Int

@@ -660,12 +660,13 @@ static void json_escape(const char *in, char *out, size_t outlen) {
 
 static void emit_watch(const char *watch_udid, const char *name,
                        const char *model, int level, int charging) {
-    char ename[1024], emodel[256];
+    char eudid[256], ename[1024], emodel[256];
+    json_escape(watch_udid, eudid, sizeof eudid);
     json_escape(name, ename, sizeof ename);
     json_escape(model, emodel, sizeof emodel);
     printf("{\"type\":\"watch\",\"udid\":\"%s\",\"name\":\"%s\",\"model\":\"%s\","
            "\"level\":%d,\"source\":\"wifi-registry\"",
-           watch_udid, ename, emodel, level);
+           eudid, ename, emodel, level);
     if (charging >= 0) printf(",\"charging\":%s", charging ? "true" : "false");
     puts("}");
     fflush(stdout);
@@ -702,12 +703,22 @@ static void poll_phone(wifi_state_t *st, const char *udid) {
     plist_t capacity = value && plist_get_node_type(value) == PLIST_DICT
         ? plist_dict_get_item(value, "BatteryCurrentCapacity") : NULL;
     uint64_t level = 101;
-    if (capacity && plist_get_node_type(capacity) == PLIST_UINT)
-        plist_get_uint_val(capacity, &level);
+    if (capacity) {
+        plist_type pt = plist_get_node_type(capacity);
+        if (pt == PLIST_UINT) {
+            plist_get_uint_val(capacity, &level);
+        } else if (pt == PLIST_INT) {
+            int64_t slevel = -1;
+            plist_get_int_val(capacity, &slevel);
+            if (slevel >= 0 && slevel <= 100) level = (uint64_t)slevel;
+        }
+    }
     if (level <= 100) {
+        char eudid[256];
+        json_escape(udid, eudid, sizeof eudid);
         plist_t charging = plist_dict_get_item(value, "BatteryIsCharging");
         printf("{\"type\":\"phone\",\"udid\":\"%s\",\"level\":%llu",
-               udid, (unsigned long long)level);
+               eudid, (unsigned long long)level);
         if (charging && plist_get_node_type(charging) == PLIST_BOOLEAN)
             printf(",\"charging\":%s", plist_bool_val_is_true(charging) ? "true" : "false");
         puts("}");
@@ -834,8 +845,8 @@ int main(int argc, char **argv) {
         if (once) break;
 
         for (int i = 0; i < POLL_S; i++) {
-            sleep(1);
             if (!stdin_alive()) { dbg("parent closed stdin, exiting"); return 0; }
+            sleep(1);
         }
     }
 

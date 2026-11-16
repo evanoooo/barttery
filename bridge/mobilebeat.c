@@ -8,9 +8,12 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MAX_DEVS 8
 #define POLL_S 30
@@ -245,6 +248,10 @@ static int poll_device(Dev *slot) {
 
 static void poll_all(CFRunLoopTimerRef timer, void *info) {
     (void)timer; (void)info;
+    if (getppid() == 1) {
+        CFRunLoopStop(CFRunLoopGetCurrent());
+        return;
+    }
     for (int i = 0; i < MAX_DEVS; i++) {
         if (!devs[i].in_use) continue;
         if (poll_device(&devs[i]) == 0) devs[i].failures = 0;
@@ -253,6 +260,17 @@ static void poll_all(CFRunLoopTimerRef timer, void *info) {
             memset(&devs[i], 0, sizeof devs[i]);
         }
     }
+}
+
+static void on_stdin_ready(CFFileDescriptorRef f, CFOptionFlags callBackTypes, void *info) {
+    (void)callBackTypes; (void)info;
+    char buf[64];
+    ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+        CFRunLoopStop(CFRunLoopGetCurrent());
+        return;
+    }
+    CFFileDescriptorEnableCallBacks(f, kCFFileDescriptorReadCallBack);
 }
 
 static void on_device(am_device_notification_callback_info *event, void *info) {
@@ -285,15 +303,45 @@ static void on_device(am_device_notification_callback_info *event, void *info) {
 }
 
 int main(void) {
+    signal(SIGPIPE, SIG_IGN);
+
     am_device_notification_t subscription = NULL;
     if (AMDeviceNotificationSubscribe(on_device, 0, 0, NULL, &subscription) != 0)
         return 1;
+
+    CFFileDescriptorRef stdin_fd = CFFileDescriptorCreate(
+        kCFAllocatorDefault, STDIN_FILENO, false, on_stdin_ready, NULL);
+    CFRunLoopSourceRef stdin_src = NULL;
+    if (stdin_fd) {
+        CFFileDescriptorEnableCallBacks(stdin_fd, kCFFileDescriptorReadCallBack);
+        stdin_src = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, stdin_fd, 0);
+        if (stdin_src) {
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), stdin_src, kCFRunLoopCommonModes);
+        }
+    }
 
     CFRunLoopTimerContext context = {0};
     CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
         NULL, CFAbsoluteTimeGetCurrent() + POLL_S, POLL_S, 0, 0, poll_all, &context);
     CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
     CFRunLoopRun();
+
+    CFRunLoopRemoveTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
     CFRelease(timer);
+    if (stdin_src) {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), stdin_src, kCFRunLoopCommonModes);
+        CFRelease(stdin_src);
+    }
+    if (stdin_fd) {
+        CFFileDescriptorInvalidate(stdin_fd);
+        CFRelease(stdin_fd);
+    }
+    for (int i = 0; i < MAX_DEVS; i++) {
+        if (devs[i].in_use && devs[i].device) {
+            AMDeviceRelease(devs[i].device);
+            devs[i].device = NULL;
+            devs[i].in_use = 0;
+        }
+    }
     return 0;
 }

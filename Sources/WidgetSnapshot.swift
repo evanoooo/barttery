@@ -117,28 +117,27 @@ enum WidgetSnapshotStore {
     static let widgetBundleId = "me.yura.barttery.widget"
     static let legacyWidgetBundleId = "com.yura.barttery.widget"
 
-    static var defaultFileURL: URL {
-        var homePath = FileManager.default.homeDirectoryForCurrentUser.path
+    private static let resolvedHomePath: String = {
         if let pw = getpwuid(getuid()), let pwDir = pw.pointee.pw_dir {
-            homePath = String(cString: pwDir)
+            return String(cString: pwDir)
         }
-        let dir = URL(fileURLWithPath: homePath)
-            .appendingPathComponent("Library/Group Containers/\(appGroup)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("battery-snapshot.json")
-    }
+        return FileManager.default.homeDirectoryForCurrentUser.path
+    }()
 
-    static var fileURL: URL? {
+    private static let cachedDefaultFileURL: URL = {
+        URL(fileURLWithPath: resolvedHomePath)
+            .appendingPathComponent("Library/Group Containers/\(appGroup)", isDirectory: true)
+            .appendingPathComponent("battery-snapshot.json")
+    }()
+
+    private static let cachedFileURL: URL? = {
         if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
             return groupURL.appendingPathComponent("battery-snapshot.json")
         }
-        return defaultFileURL
-    }
+        return cachedDefaultFileURL
+    }()
 
-    /// All locations where the snapshot can be stored or read.
-    /// Includes the App Group container, the widget's dedicated sandbox container,
-    /// and standard fallback directories.
-    static func candidateURLs() -> [URL] {
+    private static let cachedCandidateURLs: [URL] = {
         var urls: [URL] = []
 
         // 1. App Group container URL (if enabled by provisioning profile)
@@ -157,11 +156,7 @@ enum WidgetSnapshotStore {
         }
 
         // 3. User's real home directory paths (accessible to the host app)
-        var homePath = FileManager.default.homeDirectoryForCurrentUser.path
-        if let pw = getpwuid(getuid()), let pwDir = pw.pointee.pw_dir {
-            homePath = String(cString: pwDir)
-        }
-
+        let homePath = resolvedHomePath
         for bundleId in [widgetBundleId, legacyWidgetBundleId] {
             let docsPath = "\(homePath)/Library/Containers/\(bundleId)/Data/Documents/battery-snapshot.json"
             let appSupportPath = "\(homePath)/Library/Containers/\(bundleId)/Data/Library/Application Support/battery-snapshot.json"
@@ -184,6 +179,17 @@ enum WidgetSnapshotStore {
             }
         }
         return result
+    }()
+
+    static var defaultFileURL: URL { cachedDefaultFileURL }
+
+    static var fileURL: URL? { cachedFileURL }
+
+    /// All locations where the snapshot can be stored or read.
+    /// Includes the App Group container, the widget's dedicated sandbox container,
+    /// and standard fallback directories.
+    static func candidateURLs() -> [URL] {
+        cachedCandidateURLs
     }
 
     static func read(from url: URL? = fileURL) -> WidgetBatterySnapshot {
@@ -231,6 +237,7 @@ enum WidgetSnapshotStore {
 
     static func write(_ snapshot: WidgetBatterySnapshot, to url: URL? = fileURL) throws {
         guard let url else { throw CocoaError(.fileNoSuchFile) }
+        let data = try JSONEncoder().encode(snapshot)
         let targets = (url == fileURL) ? candidateURLs() : [url]
 
         var successfulWrites = 0
@@ -238,7 +245,7 @@ enum WidgetSnapshotStore {
 
         for targetURL in targets {
             do {
-                try writeSingle(snapshot, to: targetURL)
+                try writeSingleData(data, to: targetURL)
                 successfulWrites += 1
             } catch {
                 if firstError == nil { firstError = error }
@@ -250,8 +257,7 @@ enum WidgetSnapshotStore {
         }
     }
 
-    private static func writeSingle(_ snapshot: WidgetBatterySnapshot, to url: URL) throws {
-        let data = try JSONEncoder().encode(snapshot)
+    private static func writeSingleData(_ data: Data, to url: URL) throws {
         let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -262,21 +268,17 @@ enum WidgetSnapshotStore {
             if let f = fopen(cPath, "wb") {
                 defer { fclose(f) }
                 data.withUnsafeBytes { ptr in
-                    if let base = ptr.baseAddress {
-                        fwrite(base, 1, data.count, f)
+                    if let base = ptr.baseAddress,
+                       fwrite(base, 1, data.count, f) == data.count {
+                        written = true
                     }
                 }
-                written = true
             } else {
                 lastFopenErrno = errno
             }
         }
         if written { return }
 
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            throw error
-        }
+        try data.write(to: url, options: .atomic)
     }
 }

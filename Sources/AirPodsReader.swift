@@ -33,11 +33,17 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private static let deviceStaleTimeout: TimeInterval = 14400.0 // 4 hours
 
     private var central: CBCentralManager?
+    private let bleQueue = DispatchQueue(label: "me.yura.barttery.airpods.ble", qos: .utility)
     private var syncTimer: Timer?
     private var plistLevels: PlistLevels?
     private var lastBattery: AirPodsBattery?
     private var cachedBTDevice: IOBluetoothDevice?
-    private(set) var isScanning = false
+    private var hasPairedAirPods = false
+    private var isScanning = false
+    private var lastPlistModDate: Date?
+    private var lastAdvByPeripheral: [UUID: (b7: UInt8, b8: UInt8, b9: UInt8, time: TimeInterval)] = [:]
+    private var connectNotification: IOBluetoothUserNotification?
+    private var disconnectNotification: IOBluetoothUserNotification?
 
     // Known Bluetooth addresses identified as Apple Audio Accessories
     private static var knownAccessoryAddresses: Set<String> = []
@@ -85,29 +91,33 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     func startMonitoring() {
         dlopen("/System/Library/PrivateFrameworks/AudioAccessoryServices.framework/AudioAccessoryServices", RTLD_NOW)
         advClass = NSClassFromString("AAManufacturerDataAdvertisement") as? NSObject.Type
-        
+
         // Initial read of system audioaccessoryd state
         refreshPlist()
         watchPlist()
-        
+
         cachedBTDevice = findPairedDevice()
+        hasPairedAirPods = (cachedBTDevice != nil)
         if let name = cachedBTDevice?.name {
             onConnect?(name)
         }
 
-        central = CBCentralManager(delegate: self, queue: .main)
-        IOBluetoothDevice.register(forConnectNotifications: self, selector: #selector(bluetoothDeviceConnected(_:device:)))
-        if let device = btDevice(), device.isConnected() {
-            device.register(forDisconnectNotification: self, selector: #selector(bluetoothDeviceDisconnected(_:device:)))
+        central = CBCentralManager(delegate: self, queue: bleQueue,
+                                   options: [CBCentralManagerOptionShowPowerAlertKey: false])
+        connectNotification = IOBluetoothDevice.register(
+            forConnectNotifications: self,
+            selector: #selector(bluetoothDeviceConnected(_:device:))
+        )
+        if let device = cachedBTDevice, device.isConnected() {
+            disconnectNotification = device.register(
+                forDisconnectNotification: self,
+                selector: #selector(bluetoothDeviceDisconnected(_:device:))
+            )
         }
 
-        // Periodic sync to check plist every 30 seconds
+        // Periodic sync to check plist every 30 seconds (skips parsing when mtime unchanged)
         syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.refreshPlist()
-            if let battery = self.lastBattery {
-                self.onUpdate?(battery)
-            }
+            self?.refreshPlist()
         }
         syncTimer?.tolerance = 10
 
@@ -116,17 +126,44 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         center.addObserver(self, selector: #selector(handleWake), name: NSWorkspace.didWakeNotification, object: nil)
     }
 
+    deinit {
+        syncTimer?.invalidate()
+        syncTimer = nil
+        fileWatcher?.cancel()
+        fileWatcher = nil
+        connectNotification?.unregister()
+        disconnectNotification?.unregister()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        let c = central
+        bleQueue.async {
+            c?.stopScan()
+        }
+    }
+
     @objc private func handleSleep() {
         stopScanning()
     }
 
     @objc private func handleWake() {
         cachedBTDevice = findPairedDevice()
+        hasPairedAirPods = (cachedBTDevice != nil)
         refreshPlist()
         startScanning()
     }
 
     func startScanning() {
+        bleQueue.async { [weak self] in
+            self?.startScanningOnBLEQueue()
+        }
+    }
+
+    func stopScanning() {
+        bleQueue.async { [weak self] in
+            self?.stopScanningOnBLEQueue()
+        }
+    }
+
+    private func startScanningOnBLEQueue() {
         guard let central = central, central.state == .poweredOn, !isScanning else { return }
         isScanning = true
         central.scanForPeripherals(withServices: nil, options: [
@@ -134,7 +171,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         ])
     }
 
-    func stopScanning() {
+    private func stopScanningOnBLEQueue() {
         guard let central = central, isScanning else { return }
         isScanning = false
         central.stopScan()
@@ -145,10 +182,15 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         guard Self.isAirPods(name: name, address: device.addressString) else { return }
         Self.logger.notice("AirPods Bluetooth connected: \(name)")
         cachedBTDevice = device
-        device.register(forDisconnectNotification: self, selector: #selector(bluetoothDeviceDisconnected(_:device:)))
+        hasPairedAirPods = true
+        disconnectNotification?.unregister()
+        disconnectNotification = device.register(
+            forDisconnectNotification: self,
+            selector: #selector(bluetoothDeviceDisconnected(_:device:))
+        )
         DispatchQueue.main.async { [weak self] in
             self?.onConnect?(name)
-            self?.refreshPlist()
+            self?.refreshPlist(force: true)
             self?.startScanning()
         }
     }
@@ -156,9 +198,11 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     @objc private func bluetoothDeviceDisconnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
         Self.logger.notice("AirPods Bluetooth disconnected: \(device.name ?? "Unknown")")
         cachedBTDevice = nil
+        disconnectNotification?.unregister()
+        disconnectNotification = nil
         // Do not clear lastBattery! The AirPods are simply in the case or disconnected from audio.
         // Refresh plist to check for in-case battery updates.
-        refreshPlist()
+        refreshPlist(force: true)
         if let battery = lastBattery {
             onUpdate?(battery)
         }
@@ -171,7 +215,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             isScanning = false
             return
         }
-        startScanning()
+        startScanningOnBLEQueue()
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -187,19 +231,28 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
               mfr[2] == 0x07
         else { return }
 
-        let mfrCopy = mfr
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let lidClosed = self?.isLidClosed(mfrCopy) ?? false
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.handleAdvertisement(mfrCopy, lidClosed: lidClosed)
-            }
+        let b7 = mfr[7], b8 = mfr[8], b9 = mfr[9]
+        let now = ProcessInfo.processInfo.systemUptime
+        let pid = peripheral.identifier
+        if let prev = lastAdvByPeripheral[pid],
+           prev.b7 == b7, prev.b8 == b8, prev.b9 == b9,
+           now - prev.time < 2.0 {
+            return
+        }
+        if lastAdvByPeripheral.count >= 32 {
+            lastAdvByPeripheral = lastAdvByPeripheral.filter { now - $0.value.time < 10.0 }
+        }
+        lastAdvByPeripheral[pid] = (b7, b8, b9, now)
+
+        let lidClosed = isLidClosed(mfr)
+        DispatchQueue.main.async { [weak self] in
+            self?.handleAdvertisement(mfr, lidClosed: lidClosed)
         }
     }
 
     private func handleAdvertisement(_ mfr: Data, lidClosed: Bool) {
         // Only process if we have paired AirPods or plist data
-        if !isConnected && findPairedDevice() == nil && plistLevels == nil {
+        if !hasPairedAirPods && plistLevels == nil {
             return
         }
 
@@ -277,11 +330,13 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
     private func isLidClosed(_ mfr: Data) -> Bool {
         guard let cls = advClass else { return false }
-        guard let obj = cls.perform(selAlloc)?.takeUnretainedValue() as? NSObject else { return false }
-        guard let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject else { return false }
-        guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
-              let payload = payloads.first else { return false }
-        return (payload as AnyObject).value(forKey: "lidClosed") as? Int == 1
+        return autoreleasepool {
+            guard let obj = cls.perform(selAlloc)?.takeUnretainedValue() as? NSObject else { return false }
+            guard let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject else { return false }
+            guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
+                  let payload = payloads.first else { return false }
+            return (payload as AnyObject).value(forKey: "lidClosed") as? Int == 1
+        }
     }
 
     // MARK: - Plist (high-precision battery from audioaccessoryd)
@@ -292,29 +347,37 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private let staleTimeout: TimeInterval = 14400
 
     private func watchPlist() {
+        fileWatcher?.cancel()
+        fileWatcher = nil
         let fd = open(prefPath, O_RDONLY)
         guard fd >= 0 else { return }
         let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
         src.setEventHandler { [weak self] in
-            self?.refreshPlist()
-            // File was atomically replaced — fd is now stale, re-open watcher on new inode
-            self?.fileWatcher?.cancel()
-            self?.fileWatcher = nil
-            self?.watchPlist()
+            guard let self else { return }
+            let flags = self.fileWatcher?.data ?? []
+            self.refreshPlist(force: true)
+            if flags.contains(.rename) || flags.contains(.delete) {
+                // File was atomically replaced — fd is now stale, re-open watcher on new inode
+                self.watchPlist()
+            }
         }
         src.setCancelHandler { close(fd) }
         src.resume()
         fileWatcher = src
     }
 
-    func refreshPlist() {
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: prefPath),
-           let mod = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(mod) > staleTimeout {
+    func refreshPlist(force: Bool = false) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: prefPath),
+              let mod = attrs[.modificationDate] as? Date else { return }
+        if Date().timeIntervalSince(mod) > staleTimeout {
             // Only drop if older than stale timeout
             return
         }
+        if !force, let lastMod = lastPlistModDate, mod == lastMod {
+            return
+        }
+        lastPlistModDate = mod
 
         guard let prefs = NSDictionary(contentsOfFile: prefPath) else { return }
         
@@ -333,6 +396,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
         if let levels = plistLevelsFromArchive(outerData) {
             plistLevels = levels
+            hasPairedAirPods = true
             if let l = levels.left { lastLeftBattery = l }
             if let r = levels.right { lastRightBattery = r }
             if let c = levels.cas {
@@ -421,13 +485,16 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             )
         }
 
-        return bestLevels
+        if let levels = bestLevels, Date().timeIntervalSince(levels.lastSeen) <= staleTimeout {
+            return levels
+        }
+        return nil
     }
 
     // MARK: - Bluetooth connect / disconnect
 
     var isConnected:  Bool    { btDevice()?.isConnected() ?? false }
-    var deviceName:   String? { btDevice()?.name ?? findPairedDevice()?.name }
+    var deviceName:   String? { btDevice()?.name }
 
     func connect()    { btDevice()?.openConnection()  }
     func disconnect() { btDevice()?.closeConnection() }

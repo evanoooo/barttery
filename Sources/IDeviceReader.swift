@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-struct WatchBattery {
+struct WatchBattery: Equatable {
     let name: String
     let level: Int
     let isCharging: Bool
@@ -23,6 +23,7 @@ class IDeviceReader: NSObject {
     private var wifiwatch: Process?
     private var wifiwatchUDID: String?
     private var isQueryingWatch = false
+    private var isStopped = false
     private var staleTimer: Timer?
     private var lastPhoneSuccess: Date?
     private var lastPadSuccess:   Date?
@@ -59,6 +60,18 @@ class IDeviceReader: NSObject {
         )
     }
 
+    deinit {
+        isStopped = true
+        staleTimer?.invalidate()
+        staleTimer = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        for proc in [bartbeat, mobilebeat, wifiwatch] {
+            if let proc, proc.isRunning {
+                proc.terminate()
+            }
+        }
+    }
+
     @objc private func onWake() {
         lastBartbeatRestart = nil  // bypass cooldown on wake
         restartBartbeat()
@@ -84,9 +97,61 @@ class IDeviceReader: NSObject {
         scanNow()
     }
 
+    // MARK: - Helper pipe readers
+
+    private func attachLineReader(to pipe: Pipe, onLine: @escaping (String) -> Void) {
+        var lineBuf = Data()
+        let newline: UInt8 = 0x0A
+        let cr = CharacterSet(charactersIn: "\r")
+        let maxLineBufferBytes = 65536
+
+        pipe.fileHandleForReading.readabilityHandler = { h in
+            let data = h.availableData
+            if data.isEmpty {
+                h.readabilityHandler = nil
+                if !lineBuf.isEmpty,
+                   let trailing = String(data: lineBuf, encoding: .utf8)?
+                       .trimmingCharacters(in: CharacterSet.newlines),
+                   !trailing.isEmpty {
+                    onLine(trailing)
+                }
+                lineBuf.removeAll(keepingCapacity: false)
+                return
+            }
+
+            if lineBuf.count + data.count > maxLineBufferBytes {
+                lineBuf.removeAll(keepingCapacity: false)
+            }
+            lineBuf.append(data)
+
+            var searchStart = lineBuf.startIndex
+            while let nlIndex = lineBuf[searchStart...].firstIndex(of: newline) {
+                let slice = lineBuf[searchStart..<nlIndex]
+                searchStart = lineBuf.index(after: nlIndex)
+                if !slice.isEmpty,
+                   let line = String(data: slice, encoding: .utf8)?.trimmingCharacters(in: cr),
+                   !line.isEmpty {
+                    onLine(line)
+                }
+            }
+            if searchStart > lineBuf.startIndex {
+                lineBuf.removeSubrange(lineBuf.startIndex..<searchStart)
+            }
+        }
+    }
+
+    private func attachStderrDrain(to pipe: Pipe) {
+        pipe.fileHandleForReading.readabilityHandler = { h in
+            if h.availableData.isEmpty {
+                h.readabilityHandler = nil
+            }
+        }
+    }
+
     // MARK: - bartbeat process
 
     private func launchBartbeat() {
+        guard !isStopped else { return }
         if let proc = bartbeat, proc.isRunning { return }
         let path = (binDir as NSString).appendingPathComponent("bartbeat")
         guard FileManager.default.fileExists(atPath: path) else { return }
@@ -101,35 +166,38 @@ class IDeviceReader: NSObject {
         proc.standardInput  = inPipe
         proc.standardError  = errPipe
 
-        var lineBuf = ""
-        outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
-            guard let chunk = String(data: h.availableData, encoding: .utf8) else { return }
-            lineBuf += chunk
-            while let nl = lineBuf.firstIndex(of: "\n") {
-                let line = String(lineBuf[lineBuf.startIndex..<nl])
-                lineBuf.removeSubrange(lineBuf.startIndex...nl)
-                if !line.isEmpty { self?.handle(line: line) }
-            }
+        attachLineReader(to: outPipe) { [weak self] line in
+            self?.handle(line: line)
         }
         // Drain stderr so bartbeat's debug logging never fills the pipe buffer and
         // blocks its writer thread — an unread pipe is a classic way to wedge it.
-        errPipe.fileHandleForReading.readabilityHandler = { h in _ = h.availableData }
+        attachStderrDrain(to: errPipe)
 
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
+            try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                self?.launchBartbeat()
+                guard let self, !self.isStopped else { return }
+                if self.bartbeat == nil || self.bartbeat === proc {
+                    self.launchBartbeat()
+                }
             }
         }
 
-        try? proc.run()
-        bartbeat = proc
+        do {
+            try proc.run()
+            bartbeat = proc
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+        }
     }
 
     /// Apple's MobileDevice.framework sees modern CoreDevice/RemotePairing
     /// devices that libimobiledevice cannot discover over Wi-Fi.
     private func launchMobilebeat() {
+        guard !isStopped else { return }
         if let proc = mobilebeat, proc.isRunning { return }
         let path = (binDir as NSString).appendingPathComponent("mobilebeat")
         guard FileManager.default.fileExists(atPath: path) else { return }
@@ -141,31 +209,35 @@ class IDeviceReader: NSObject {
         proc.standardError = errPipe
         proc.standardInput = inPipe
 
-        var lineBuf = ""
-        outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
-            guard let chunk = String(data: h.availableData, encoding: .utf8) else { return }
-            lineBuf += chunk
-            while let nl = lineBuf.firstIndex(of: "\n") {
-                let line = String(lineBuf[lineBuf.startIndex..<nl])
-                lineBuf.removeSubrange(lineBuf.startIndex...nl)
-                if !line.isEmpty { self?.handle(line: line) }
-            }
+        attachLineReader(to: outPipe) { [weak self] line in
+            self?.handle(line: line)
         }
-        errPipe.fileHandleForReading.readabilityHandler = { h in _ = h.availableData }
-        proc.terminationHandler = { [weak self] _ in
+        attachStderrDrain(to: errPipe)
+
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
+            try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                self?.launchMobilebeat()
+                guard let self, !self.isStopped else { return }
+                if self.mobilebeat == nil || self.mobilebeat === proc {
+                    self.launchMobilebeat()
+                }
             }
         }
-        try? proc.run()
-        mobilebeat = proc
+        do {
+            try proc.run()
+            mobilebeat = proc
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+        }
     }
 
     /// Reads the paired Watch over classic Wi-Fi lockdown, falling back to live
     /// power-source events when the iPhone refuses companion_proxy requests.
     private func launchWifiwatch() {
+        guard !isStopped else { return }
         guard let udid = phoneUDID ?? UserDefaults.standard.string(forKey: "phone.lastUDID"),
               !udid.isEmpty else { return }
 
@@ -187,29 +259,31 @@ class IDeviceReader: NSObject {
         proc.standardError  = errPipe
         proc.standardInput  = inPipe
 
-        var lineBuf = ""
-        outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
-            guard let chunk = String(data: h.availableData, encoding: .utf8), !chunk.isEmpty else { return }
-            lineBuf += chunk
-            while let nl = lineBuf.firstIndex(of: "\n") {
-                let line = String(lineBuf[lineBuf.startIndex..<nl])
-                lineBuf.removeSubrange(lineBuf.startIndex...nl)
-                if !line.isEmpty { self?.handleJSON(line) }
-            }
+        attachLineReader(to: outPipe) { [weak self] line in
+            self?.handleJSON(line)
         }
-        errPipe.fileHandleForReading.readabilityHandler = { h in _ = h.availableData }
+        attachStderrDrain(to: errPipe)
 
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self, weak proc] _ in
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
+            try? inPipe.fileHandleForWriting.close()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                self?.launchWifiwatch()
+                guard let self, !self.isStopped else { return }
+                if self.wifiwatch == nil || self.wifiwatch === proc {
+                    self.launchWifiwatch()
+                }
             }
         }
 
-        try? proc.run()
-        wifiwatch = proc
-        wifiwatchUDID = udid
+        do {
+            try proc.run()
+            wifiwatch = proc
+            wifiwatchUDID = udid
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+        }
     }
 
     private func handle(line: String) {
@@ -249,7 +323,7 @@ class IDeviceReader: NSObject {
                 UserDefaults.standard.set(Date(), forKey: "phone.lastSyncTime")
                 if let name, !name.isEmpty { UserDefaults.standard.set(name, forKey: "phone.lastName") }
             }
-            DispatchQueue.main.async { [weak self] in self?.onPhoneUpdate?(level, charging, name) }
+            onPhoneUpdate?(level, charging, name)
             launchWifiwatch()
 
         case "pad":
@@ -262,7 +336,7 @@ class IDeviceReader: NSObject {
                 UserDefaults.standard.set(Date(), forKey: "pad.lastSyncTime")
                 if let name, !name.isEmpty { UserDefaults.standard.set(name, forKey: "pad.lastName") }
             }
-            DispatchQueue.main.async { [weak self] in self?.onPadUpdate?(level, charging, name) }
+            onPadUpdate?(level, charging, name)
 
         case "connected":
             if json["device_type"] as? String == "phone", let udid = json["udid"] as? String {

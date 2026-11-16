@@ -12,7 +12,7 @@ enum BatteryDevice: String, CaseIterable, Codable {
 class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
 
-    private struct DeviceState {
+    private struct DeviceState: Equatable {
         var lastLevel: Int?
         var notifiedBelow: Set<Int> = []
         var notifiedAbove: Set<Int> = []
@@ -83,6 +83,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let settings = AppSettings.shared
         let rules = settings.rules(for: device)
         var state = states[device] ?? DeviceState()
+        let initialState = state
         let prev = state.lastLevel
         let wasCharging = state.wasCharging
         let justStoppedCharging = !isCharging && wasCharging
@@ -91,7 +92,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             state.wasCharging = isCharging
             state.lastLevel = level
             states[device] = state
-            persist(device: device, state: state)
+            if state != initialState {
+                persist(device: device, state: state)
+            }
         }
 
         // 1. Check "Above" charging thresholds (e.g. 80%, 100%)

@@ -63,9 +63,6 @@ class LogitechReader {
         timer?.invalidate()
         // Do not request or prompt for Input Monitoring permission.
         // If granted out-of-band by user, read devices via HID++; otherwise keep completely silent.
-        let access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
-        guard access == kIOHIDAccessTypeGranted else { return }
-
         readDevices()
         timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
             self?.readDevices()
@@ -74,7 +71,6 @@ class LogitechReader {
     }
 
     func refresh() {
-        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else { return }
         readDevices()
     }
 
@@ -89,14 +85,17 @@ class LogitechReader {
     private func readDevices() {
         guard !isReading else { return }
         let accessGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-        if lastAccessGranted != accessGranted {
+        let accessChanged = lastAccessGranted != accessGranted
+        if accessChanged {
             Self.logger.notice("HID battery access granted: \(accessGranted, privacy: .public)")
             lastAccessGranted = accessGranted
         }
         guard accessGranted else {
-            onDevicesFound?([])
-            onChargingUpdate?([])
-            onUpdate?([])
+            if accessChanged {
+                onDevicesFound?([])
+                onChargingUpdate?([])
+                onUpdate?([])
+            }
             return
         }
         isReading = true
@@ -180,7 +179,9 @@ private enum HIDPPEngine {
 
             var results: [AccessoryBattery] = []
             var chargingResults: [LogitechChargingReading] = []
+            var resolvedComplete = Set<String>()
             for (dev, name) in matched {
+                if resolvedComplete.contains(name) { continue }
                 if let status = queryDevice(dev: dev, lastKnownLevel: lastKnownLevels[name]) {
                     let date = Date()
                     if status.chargingKnown {
@@ -189,6 +190,9 @@ private enum HIDPPEngine {
                     if let level = status.level, status.reportsLevel {
                         results.append(AccessoryBattery(name: name, level: level, charging: status.charging,
                                                         updatedAt: date, chargingKnown: status.chargingKnown))
+                        if status.chargingKnown {
+                            resolvedComplete.insert(name)
+                        }
                     }
                 }
             }
@@ -258,7 +262,9 @@ private enum HIDPPEngine {
 
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            CFRunLoopRunInMode(CFRunLoopMode.defaultMode, min(0.05, remaining), true)
             if let reply = queue.dequeue(featIdx: featIdx, fnSW: fnSW) {
                 return try? reply.get()
             }

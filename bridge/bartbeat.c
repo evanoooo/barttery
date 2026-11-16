@@ -30,6 +30,7 @@
 /* ── thread-safe stdout ─────────────────────────────────────────────────── */
 
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t dbg_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void emit(const char *s) {
     pthread_mutex_lock(&out_lock);
@@ -40,12 +41,21 @@ static void emit(const char *s) {
 
 static void dbg(const char *fmt, ...) {
     va_list ap;
+    pthread_mutex_lock(&dbg_lock);
     va_start(ap, fmt);
     fprintf(stderr, "[bartbeat] ");
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     fflush(stderr);
     va_end(ap);
+    pthread_mutex_unlock(&dbg_lock);
+}
+
+static void sleep_while_alive(volatile int *alive, int seconds) {
+    int steps = seconds * 5;
+    for (int i = 0; i < steps && *alive; i++) {
+        usleep(200000);
+    }
 }
 
 #include <stdarg.h>  /* for va_list above — must follow stdio.h */
@@ -269,53 +279,67 @@ static void query_watch(idevice_t device) {
 
 typedef struct { idevice_t device; volatile int *alive; } HBManagerArg;
 
+typedef struct {
+    plist_t polo;
+    heartbeat_client_t hb;
+    lockdownd_client_t ld_hb;
+} HBCleanup;
+
+static void hb_cleanup(void *arg) {
+    HBCleanup *c = arg;
+    if (c->polo) { plist_free(c->polo); c->polo = NULL; }
+    if (c->hb) { heartbeat_client_free(c->hb); c->hb = NULL; }
+    if (c->ld_hb) { lockdownd_client_free(c->ld_hb); c->ld_hb = NULL; }
+}
+
 static void hb_run_once(idevice_t device, volatile int *alive) {
-    lockdownd_client_t ld_hb = NULL;
-    if (lockdownd_client_new_with_handshake(device, &ld_hb, "bartbeat-hb") != LOCKDOWN_E_SUCCESS) {
+    HBCleanup res = { NULL, NULL, NULL };
+    pthread_cleanup_push(hb_cleanup, &res);
+
+    if (lockdownd_client_new_with_handshake(device, &res.ld_hb, "bartbeat-hb") != LOCKDOWN_E_SUCCESS) {
         dbg("heartbeat lockdown handshake failed");
-        return;
+        goto done;
     }
     lockdownd_service_descriptor_t hb_svc = NULL;
-    heartbeat_client_t hb = NULL;
-    if (lockdownd_start_service(ld_hb, HEARTBEAT_SERVICE_NAME, &hb_svc) == LOCKDOWN_E_SUCCESS) {
-        heartbeat_client_new(device, hb_svc, &hb);
+    if (lockdownd_start_service(res.ld_hb, HEARTBEAT_SERVICE_NAME, &hb_svc) == LOCKDOWN_E_SUCCESS) {
+        heartbeat_client_new(device, hb_svc, &res.hb);
         lockdownd_service_descriptor_free(hb_svc);
     }
     /* Keep ld_hb alive while heartbeat runs: iOS ties the heartbeat service
      * lifetime to its lockdownd session — freeing ld_hb early causes an
      * immediate HEARTBEAT_E_MUX_ERROR on the first receive. */
-    if (!hb) {
+    if (!res.hb) {
         dbg("heartbeat_client_new failed");
-        lockdownd_client_free(ld_hb);
-        return;
+        goto done;
     }
 
-    plist_t polo = plist_new_dict();
-    plist_dict_set_item(polo, "Command", plist_new_string("Polo"));
+    res.polo = plist_new_dict();
+    plist_dict_set_item(res.polo, "Command", plist_new_string("Polo"));
     dbg("heartbeat running");
     while (*alive) {
         plist_t marco = NULL;
-        heartbeat_error_t err = heartbeat_receive_with_timeout(hb, &marco, HB_MS);
+        heartbeat_error_t err = heartbeat_receive_with_timeout(res.hb, &marco, HB_MS);
         plist_free(marco);
         if (err != HEARTBEAT_E_SUCCESS) {
             dbg("heartbeat receive error %d", (int)err);
             break;
         }
-        heartbeat_send(hb, polo);
+        heartbeat_send(res.hb, res.polo);
     }
-    plist_free(polo);
-    heartbeat_client_free(hb);
-    lockdownd_client_free(ld_hb);
+
+done:
+    pthread_cleanup_pop(1);
 }
 
 static void *hb_manager_run(void *p) {
     HBManagerArg *a = p;
+    pthread_cleanup_push(free, a);
     while (*a->alive) {
         hb_run_once(a->device, a->alive);
         /* brief pause before retry so we don't hammer lockdownd */
-        for (int i = 0; i < 5 && *a->alive; i++) sleep(1);
+        sleep_while_alive(a->alive, 5);
     }
-    free(a);
+    pthread_cleanup_pop(1);
     return NULL;
 }
 
@@ -336,8 +360,8 @@ static void enable_wifi_connections(idevice_t device) {
     if (lockdownd_get_value(ld, "com.apple.mobile.wireless_lockdown",
                             "EnableWifiConnections", &value) == LOCKDOWN_E_SUCCESS && value) {
         enabled = plist_bool_val_is_true(value);
-        plist_free(value);
     }
+    if (value) plist_free(value);
     if (!enabled) {
         lockdownd_error_t err = lockdownd_set_value(
             ld, "com.apple.mobile.wireless_lockdown", "EnableWifiConnections",
@@ -376,13 +400,14 @@ typedef struct { idevice_t device; volatile int *alive; } WatchRunArg;
 
 static void *watch_run(void *p) {
     WatchRunArg *a = p;
+    pthread_cleanup_push(free, a);
     /* stagger first query so battery session is established first */
-    for (int i = 0; i < POLL_S && *a->alive; i++) sleep(1);
+    sleep_while_alive(a->alive, POLL_S);
     while (*a->alive) {
         query_watch(a->device);
-        for (int i = 0; i < POLL_S && *a->alive; i++) sleep(1);
+        sleep_while_alive(a->alive, POLL_S);
     }
-    free(a);
+    pthread_cleanup_pop(1);
     return NULL;
 }
 
@@ -434,13 +459,19 @@ static void *dev_run(void *p) {
         enable_wifi_connections(device);
 
     /* heartbeat manager — self-restarting thread, independent of battery poll.
-     * Stored in dev->hb_thread so it can be cancelled when dev_run exits. */
+     * Stored in dev->hb_thread so it can be cancelled and joined when dev_run exits. */
     {
         HBManagerArg *a = malloc(sizeof *a);
-        a->device = device;  a->alive = &dev->alive;
-        pthread_create(&dev->hb_thread, NULL, hb_manager_run, a);
-        pthread_detach(dev->hb_thread);
-        dev->hb_started = 1;
+        if (a) {
+            a->device = device;  a->alive = &dev->alive;
+            pthread_mutex_lock(&devs_lock);
+            if (pthread_create(&dev->hb_thread, NULL, hb_manager_run, a) == 0) {
+                dev->hb_started = 1;
+            } else {
+                free(a);
+            }
+            pthread_mutex_unlock(&devs_lock);
+        }
     }
 
     /* Watch query thread — only for iPhones (Watch pairs to phone, not iPad).
@@ -448,10 +479,16 @@ static void *dev_run(void *p) {
      * Uses its own lockdownd session so ld_bat is never touched by cp_open. */
     if (strcmp(type, "phone") == 0) {
         WatchRunArg *a = malloc(sizeof *a);
-        a->device = device;  a->alive = &dev->alive;
-        pthread_create(&dev->watch_thread, NULL, watch_run, a);
-        pthread_detach(dev->watch_thread);
-        dev->watch_started = 1;
+        if (a) {
+            a->device = device;  a->alive = &dev->alive;
+            pthread_mutex_lock(&devs_lock);
+            if (pthread_create(&dev->watch_thread, NULL, watch_run, a) == 0) {
+                dev->watch_started = 1;
+            } else {
+                free(a);
+            }
+            pthread_mutex_unlock(&devs_lock);
+        }
     }
 
     /* initial battery read */
@@ -475,7 +512,7 @@ static void *dev_run(void *p) {
 
     /* battery poll loop — reuse ld_bat; reconnect after 3 consecutive failures */
     int fails = 0;
-    for (int i = 0; i < POLL_S && dev->alive; i++) sleep(1);
+    sleep_while_alive(&dev->alive, POLL_S);
 
     while (dev->alive) {
         int chg = 0;
@@ -491,19 +528,28 @@ static void *dev_run(void *p) {
             dbg("battery fail %d/3", ++fails);
             if (fails >= 3) break;   /* force reconnect */
         }
-        for (int i = 0; i < POLL_S && dev->alive; i++) sleep(1);
+        sleep_while_alive(&dev->alive, POLL_S);
     }
 
 out:
-    /* Cancel watch and heartbeat threads before freeing device. */
+    /* Cancel and join watch and heartbeat threads before freeing device. */
     dev->alive = 0;
-    if (dev->watch_started) {
-        pthread_cancel(dev->watch_thread);
-        dev->watch_started = 0;
+    pthread_mutex_lock(&devs_lock);
+    int has_watch = dev->watch_started;
+    pthread_t wt = dev->watch_thread;
+    dev->watch_started = 0;
+    int has_hb = dev->hb_started;
+    pthread_t ht = dev->hb_thread;
+    dev->hb_started = 0;
+    pthread_mutex_unlock(&devs_lock);
+
+    if (has_watch) {
+        pthread_cancel(wt);
+        pthread_join(wt, NULL);
     }
-    if (dev->hb_started) {
-        pthread_cancel(dev->hb_thread);
-        dev->hb_started = 0;
+    if (has_hb) {
+        pthread_cancel(ht);
+        pthread_join(ht, NULL);
     }
     if (ld_bat) lockdownd_client_free(ld_bat);
     if (device)  idevice_free(device);
@@ -585,21 +631,26 @@ static void on_ev(const usbmuxd_event_t *ev, void *ud) {
 static void *scan_run(void *p) {
     (void)p;
     while (!g_stop) {
-        for (int i = 0; i < POLL_S && !g_stop; i++) sleep(1);
+        for (int i = 0; i < POLL_S * 5 && !g_stop; i++) usleep(200000);
         if (g_stop) break;
 
-        /* watchdog: cancel threads stuck >2 min.
-         * Use lastOk if battery was ever read, otherwise fall back to startTime
-         * (catches threads stuck in initial lockdownd handshake). */
+        /* watchdog: signal stuck threads at >2 min so dev_run exits cleanly;
+         * only force-cancel if still stuck >3 min. */
         time_t now = time(NULL);
         pthread_mutex_lock(&devs_lock);
         for (int i = 0; i < MAX_DEVS; i++) {
             if (!devs[i].in_use) continue;
             time_t ref = devs[i].lastOk > 0 ? devs[i].lastOk : devs[i].startTime;
             if (ref == 0 || now - ref <= 120) continue;
+            if (devs[i].alive) {
+                dbg("watchdog: requesting exit for stalled thread %s (%lds, lastOk=%d)",
+                    devs[i].udid, (long)(now - ref), devs[i].lastOk > 0);
+                devs[i].alive = 0;
+                continue;
+            }
+            if (now - ref <= 180) continue;
             dbg("watchdog: cancelling stuck thread for %s (%lds, lastOk=%d)",
                 devs[i].udid, (long)(now - ref), devs[i].lastOk > 0);
-            devs[i].alive = 0;
             if (devs[i].watch_started) {
                 pthread_cancel(devs[i].watch_thread);
                 devs[i].watch_started = 0;

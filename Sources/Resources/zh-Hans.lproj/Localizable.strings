@@ -60,7 +60,10 @@
 "rules.cancel" = "取消";
 
 /* 设置窗口 */
-"settings.title" = "通知设置";
+"settings.title" = "Barttery 偏好设置";
+"settings.tab_notifications" = "电量通知";
+"settings.tab_widget" = "小组件设备";
+"settings.tab_general" = "通用偏好";
 "settings.general" = "通用";
 "settings.show_percentage_menubar" = "在状态栏显示电量百分比";
 "settings.devices" = "设备设置";
@@ -70,3 +73,23 @@
 "settings.test_sent" = "测试通知已发送！";
 "settings.hint_below" = "当设备电量过低时发送提醒。";
 "settings.hint_above" = "当设备达到设定充电目标（如 80% 延长电池寿命或 100% 充满）时发送提醒。";
+"settings.check_for_updates" = "检查更新…";
+
+/* 小组件设置 */
+"widget.settings_title" = "小组件显示设备";
+"widget.settings_subtitle" = "选择要在桌面和通知中心小组件中显示的电池设备及显示顺序。";
+"widget.mode_all" = "自动显示所有活跃设备（推荐）";
+"widget.mode_custom" = "自定义显示设备与顺序";
+"widget.top_four_hint" = "排在前 4 位的设备将展示在标准 4 环小组件中";
+"widget.slot_badge" = "第 %d 位";
+"widget.reset_default" = "恢复默认";
+"widget.move_up" = "上移";
+"widget.move_down" = "下移";
+"widget.show_in_widget" = "在小组件中显示";
+"widget.device_mac" = "Mac (本机)";
+"widget.device_phone" = "iPhone";
+"widget.device_airpods" = "AirPods 耳机";
+"widget.device_airpods_case" = "AirPods 充电盒";
+"widget.device_watch" = "Apple Watch";
+"widget.device_pad" = "iPad";
+"widget.device_accessories" = "其他蓝牙外设";

@@ -40,6 +40,12 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
                                    options: [CBCentralManagerOptionShowPowerAlertKey: false])
     }
 
+    deinit {
+        for p in peripherals.values where p.state == .connected || p.state == .connecting {
+            central?.cancelPeripheralConnection(p)
+        }
+    }
+
     func refresh() {
         guard central?.state == .poweredOn else { return }
         pruneStalePeripherals()
@@ -71,10 +77,17 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         for svc in Self.probedServices {
             for p in central.retrieveConnectedPeripherals(withServices: [svc]) {
                 guard seen.insert(p.identifier).inserted else { continue }
-                guard peripherals[p.identifier] == nil else { continue }
-                // iPhones and iPads are handled by IDeviceReader; skip them here.
+                if let existing = peripherals[p.identifier] {
+                    if existing.state == .disconnected {
+                        existing.delegate = self
+                        central.connect(existing, options: nil)
+                    }
+                    continue
+                }
+                // iPhones and iPads are handled by IDeviceReader; AirPods/Beats by AirPodsReader.
                 let lower = (p.name ?? "").lowercased()
-                guard !lower.contains("iphone"), !lower.contains("ipad") else { continue }
+                guard !lower.contains("iphone"), !lower.contains("ipad"),
+                      !AirPodsReader.isAirPods(name: p.name, address: nil) else { continue }
                 peripherals[p.identifier] = p
                 p.delegate = self
                 central.connect(p, options: nil)

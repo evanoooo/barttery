@@ -60,7 +60,10 @@
 "rules.cancel" = "Cancel";
 
 /* Settings Window */
-"settings.title" = "Notification Preferences";
+"settings.title" = "Barttery Preferences";
+"settings.tab_notifications" = "Notifications";
+"settings.tab_widget" = "Widget Devices";
+"settings.tab_general" = "General";
 "settings.general" = "General";
 "settings.show_percentage_menubar" = "Show Battery Percentage in Status Bar";
 "settings.devices" = "Devices";
@@ -70,3 +73,23 @@
 "settings.test_sent" = "Test notification sent!";
 "settings.hint_below" = "Get notified when this device's battery is running low.";
 "settings.hint_above" = "Get notified when this device reaches a desired charge level.";
+"settings.check_for_updates" = "Check for Updates…";
+
+/* Widget Settings */
+"widget.settings_title" = "Widget Devices";
+"widget.settings_subtitle" = "Choose which battery devices appear in desktop and Notification Center widgets and their priority.";
+"widget.mode_all" = "Show all active devices automatically (Recommended)";
+"widget.mode_custom" = "Customize devices and order";
+"widget.top_four_hint" = "The first 4 devices will be displayed in the standard 4-ring widget";
+"widget.slot_badge" = "#%d";
+"widget.reset_default" = "Reset to Default";
+"widget.move_up" = "Move Up";
+"widget.move_down" = "Move Down";
+"widget.show_in_widget" = "Show in Widget";
+"widget.device_mac" = "Mac (This Mac)";
+"widget.device_phone" = "iPhone";
+"widget.device_airpods" = "AirPods Earbuds";
+"widget.device_airpods_case" = "AirPods Charging Case";
+"widget.device_watch" = "Apple Watch";
+"widget.device_pad" = "iPad";
+"widget.device_accessories" = "Bluetooth Accessories";

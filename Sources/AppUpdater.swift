@@ -59,6 +59,17 @@ final class AppUpdater: NSObject, ObservableObject {
         #endif
     }
 
+    func checkForUpdates() {
+        #if canImport(Sparkle)
+        if let controller, canCheckForUpdates {
+            NSApp.activate(ignoringOtherApps: true)
+            controller.checkForUpdates(nil)
+            return
+        }
+        #endif
+        UpdateChecker.check(manual: true)
+    }
+
     func recordAvailableUpdate(version: String) {
         guard !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         availableVersion = version

@@ -6,6 +6,7 @@ private struct IconKey: Hashable {
 }
 
 private let iconFont: NSFont = sfRounded(size: 13, weight: .bold)
+private let rgbColorSpace = CGColorSpaceCreateDeviceRGB()
 private var iconCache: [IconKey: NSImage] = [:]
 private let iconCacheLock = NSLock()
 private var cachedPlugIcon: NSImage?
@@ -110,7 +111,7 @@ func renderBatteryIcon(level: Int, state: ChargeState) -> NSImage {
     guard let ctx = CGContext(
         data: nil, width: pw, height: ph,
         bitsPerComponent: 8, bytesPerRow: 0,
-        space: CGColorSpaceCreateDeviceRGB(),
+        space: rgbColorSpace,
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ) else { return NSImage() }
 
@@ -208,7 +209,13 @@ private func drawPause(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat) {
 }
 
 func renderPlugIcon() -> NSImage {
-    if let cached = cachedPlugIcon { return cached }
+    iconCacheLock.lock()
+    if let cached = cachedPlugIcon {
+        iconCacheLock.unlock()
+        return cached
+    }
+    iconCacheLock.unlock()
+
     let size = CGSize(width: 18, height: 14)
     let image = NSImage(size: size, flipped: false) { rect in
         guard let symbol = NSImage(systemSymbolName: "powerplug", accessibilityDescription: nil) else { return false }
@@ -216,7 +223,14 @@ func renderPlugIcon() -> NSImage {
         return true
     }
     image.isTemplate = true
+
+    iconCacheLock.lock()
+    if let cached = cachedPlugIcon {
+        iconCacheLock.unlock()
+        return cached
+    }
     cachedPlugIcon = image
+    iconCacheLock.unlock()
     return image
 }
 

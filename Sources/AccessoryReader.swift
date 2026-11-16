@@ -2,7 +2,7 @@ import Foundation
 import IOKit
 import IOBluetooth
 
-struct AccessoryBattery {
+struct AccessoryBattery: Equatable {
     let name: String
     let level: Int
     var charging: Bool
@@ -16,6 +16,18 @@ struct AccessoryBattery {
                          isApple: isApple, updatedAt: updatedAt, chargingKnown: chargingKnown)
     }
 
+    static func isHeadphoneName(_ lower: String) -> Bool {
+        lower.contains("bud") || lower.contains("headphone") || lower.contains("earphone")
+            || lower.contains("wh-") || lower.contains("wf-") || lower.contains("bose")
+            || lower.contains("beats") || lower.contains("jabra") || lower.contains("shokz")
+            || lower.contains("soundcore") || lower.contains("linkbuds") || lower.contains("headset")
+    }
+
+    static func isSupportedAccessoryName(_ lower: String) -> Bool {
+        lower.contains("keyboard") || lower.contains("mouse") || lower.contains("trackpad")
+            || isHeadphoneName(lower)
+    }
+
     private var isKeyboard: Bool {
         let lower = name.lowercased()
         return lower.contains("keyboard") || lower.contains(" keys") || lower.contains("k380")
@@ -23,11 +35,7 @@ struct AccessoryBattery {
     }
 
     private var isHeadphones: Bool {
-        let lower = name.lowercased()
-        return lower.contains("bud") || lower.contains("headphone") || lower.contains("earphone")
-            || lower.contains("wh-") || lower.contains("wf-") || lower.contains("bose")
-            || lower.contains("beats") || lower.contains("jabra") || lower.contains("shokz")
-            || lower.contains("soundcore") || lower.contains("linkbuds") || lower.contains("headset")
+        Self.isHeadphoneName(name.lowercased())
     }
 
     var icon: String {
@@ -50,9 +58,17 @@ struct AccessoryBattery {
 class AccessoryReader: NSObject {
     var onUpdate: (([AccessoryBattery]) -> Void)?
     private var timer: Timer?
-    private var disconnectNotifications: [IOBluetoothUserNotification] = []
+    private var disconnectNotifications: [String: IOBluetoothUserNotification] = [:]
     private var connectNotification: IOBluetoothUserNotification?
     private var lastKnownAccessories: [String: AccessoryBattery] = [:]
+
+    deinit {
+        timer?.invalidate()
+        timer = nil
+        connectNotification?.unregister()
+        disconnectNotifications.values.forEach { $0.unregister() }
+        disconnectNotifications.removeAll()
+    }
 
     func startMonitoring() {
         connectNotification = IOBluetoothDevice.register(
@@ -60,7 +76,7 @@ class AccessoryReader: NSObject {
             selector: #selector(deviceConnected(_:device:))
         )
         read()
-        // Poll every 5 s for the first minute (BT may not be ready at login), then every 60 s.
+        // Poll every 5 s for the first minute (BT may not be ready at login), then every 180 s.
         var ticks = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
             self?.read()
@@ -81,21 +97,20 @@ class AccessoryReader: NSObject {
         readReturningFound(addr: "")
     }
 
-    private func registerDisconnectNotifications() {
-        disconnectNotifications.forEach { $0.unregister() }
-        disconnectNotifications.removeAll()
-        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
+    private func registerDisconnectNotifications(paired: [IOBluetoothDevice]) {
+        var activeKeys = Set<String>()
         for device in paired {
-            guard device.isConnected() else { continue }
-            let name = (device.name ?? "").lowercased()
-            let matches = name.contains("keyboard") || name.contains("mouse") || name.contains("trackpad")
-                || name.contains("bud") || name.contains("headphone") || name.contains("earphone")
-                || name.contains("wh-") || name.contains("wf-") || name.contains("bose")
-                || name.contains("beats") || name.contains("jabra") || name.contains("shokz")
-            guard matches else { continue }
-            if let note = device.register(forDisconnectNotification: self, selector: #selector(deviceDisconnected(_:device:))) {
-                disconnectNotifications.append(note)
+            guard device.isConnected(), let rawName = device.name else { continue }
+            guard AccessoryBattery.isSupportedAccessoryName(rawName.lowercased()) else { continue }
+            let key = (device.addressString ?? rawName).lowercased()
+            activeKeys.insert(key)
+            if disconnectNotifications[key] == nil,
+               let note = device.register(forDisconnectNotification: self, selector: #selector(deviceDisconnected(_:device:))) {
+                disconnectNotifications[key] = note
             }
+        }
+        for key in disconnectNotifications.keys where !activeKeys.contains(key) {
+            disconnectNotifications.removeValue(forKey: key)?.unregister()
         }
     }
 
@@ -115,11 +130,16 @@ class AccessoryReader: NSObject {
     // Returns true if the device with the given BT address appeared in IOKit.
     @discardableResult
     private func readReturningFound(addr: String) -> Bool {
+        let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []
         var btNames: [String: String] = [:]
-        if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
-            for d in devices {
-                if let a = d.addressString, let name = d.name {
+        var connectedNames = Set<String>()
+        for d in paired {
+            if let name = d.name {
+                if let a = d.addressString {
                     btNames[a.lowercased()] = name
+                }
+                if d.isConnected() {
+                    connectedNames.insert(name)
                 }
             }
         }
@@ -152,12 +172,7 @@ class AccessoryReader: NSObject {
             guard vendorID != 0x046D else { continue }
 
             let lower = product.lowercased()
-            let isHeadphoneDevice = lower.contains("bud") || lower.contains("headphone") || lower.contains("earphone")
-                || lower.contains("wh-") || lower.contains("wf-") || lower.contains("bose")
-                || lower.contains("beats") || lower.contains("jabra") || lower.contains("shokz")
-                || lower.contains("soundcore") || lower.contains("linkbuds") || lower.contains("headset")
-            guard lower.contains("keyboard") || lower.contains("mouse") || lower.contains("trackpad") || isHeadphoneDevice
-            else { continue }
+            guard AccessoryBattery.isSupportedAccessoryName(lower) else { continue }
 
             if seen[product] == nil {
                 let devAddr = (props["DeviceAddress"] as? String)?.lowercased() ?? ""
@@ -172,27 +187,30 @@ class AccessoryReader: NSObject {
         }
 
         // Keep last known readings for devices that are still connected via Bluetooth
-        if let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
-            let connectedNames = Set(paired.filter { $0.isConnected() }.compactMap { $0.name })
-            for (key, item) in lastKnownAccessories where connectedNames.contains(item.name) {
-                if seen[key] == nil {
-                    seen[key] = item
-                }
+        for (key, item) in lastKnownAccessories where connectedNames.contains(item.name) {
+            if seen[key] == nil {
+                seen[key] = item
             }
         }
-        for (k, v) in seen {
-            lastKnownAccessories[k] = v
-        }
+        lastKnownAccessories = seen
 
         let result = Array(seen.values).sorted { $0.name < $1.name }
-        registerDisconnectNotifications()
-        DispatchQueue.main.async { [weak self] in
-            self?.onUpdate?(result)
+        registerDisconnectNotifications(paired: paired)
+        if Thread.isMainThread {
+            onUpdate?(result)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.onUpdate?(result)
+            }
         }
         return found
     }
 
     @objc private func deviceDisconnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        let key = (device.addressString ?? device.name ?? "").lowercased()
+        if !key.isEmpty {
+            disconnectNotifications.removeValue(forKey: key)?.unregister()
+        }
         if let name = device.name {
             lastKnownAccessories = lastKnownAccessories.filter { $0.value.name != name }
         }
