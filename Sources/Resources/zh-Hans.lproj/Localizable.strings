@@ -101,4 +101,9 @@
 /* 电池用量历史 */
 "history.title" = "电池电量";
 "history.past24h" = "过去 24 小时";
+"history.past7d" = "过去 7 天";
+"history.range_24h" = "24小时";
+"history.range_7d" = "7天";
+"history.today" = "今天";
+"history.yesterday" = "昨天";
 

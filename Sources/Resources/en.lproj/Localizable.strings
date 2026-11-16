@@ -101,4 +101,9 @@
 /* Battery History */
 "history.title" = "Battery Level";
 "history.past24h" = "Past 24 Hours";
+"history.past7d" = "Past 7 Days";
+"history.range_24h" = "24h";
+"history.range_7d" = "7d";
+"history.today" = "Today";
+"history.yesterday" = "Yesterday";
 

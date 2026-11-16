@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+// MARK: - History Range
+
+enum HistoryRange: String, CaseIterable {
+    case twentyFourHours = "24h"
+    case sevenDays = "7d"
+}
+
 // MARK: - Battery History View
 
 struct BatteryHistoryView: View {
@@ -8,6 +15,10 @@ struct BatteryHistoryView: View {
     @ObservedObject private var historyStore = BatteryHistoryStore.shared
 
     @State private var selectedDeviceKey: String = "mac"
+    @State private var selectedRange: HistoryRange = {
+        let saved = UserDefaults.standard.string(forKey: "batteryHistory.range")
+        return HistoryRange(rawValue: saved ?? "24h") ?? .twentyFourHours
+    }()
     @State private var hoveredBucket: BatteryTimelineBucket? = nil
     @State private var isCollapsed: Bool = UserDefaults.standard.bool(forKey: "batteryHistory.isCollapsed")
 
@@ -34,8 +45,8 @@ struct BatteryHistoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Header with title and collapse toggle
-            HStack(alignment: .center) {
+            // Header with title, hover info, collapse toggle, range switcher & device menu
+            HStack(alignment: .center, spacing: 6) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isCollapsed.toggle()
@@ -53,12 +64,19 @@ struct BatteryHistoryView: View {
                             .foregroundColor(.primary)
 
                         if let hovered = hoveredBucket, let lvl = hovered.level {
-                            Text("•  \(formatTimeRange(from: hovered.startDate, to: hovered.endDate))  \(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")")
-                                .font(.system(size: 11, weight: .regular))
-                                .foregroundColor(.secondary)
-                                .transition(.opacity)
+                            if selectedRange == .sevenDays {
+                                Text("•  \(formatSevenDaysHover(hovered.startDate))  \(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")")
+                                    .font(.system(size: 11, weight: .regular))
+                                    .foregroundColor(.secondary)
+                                    .transition(.opacity)
+                            } else {
+                                Text("•  \(formatTimeRange(from: hovered.startDate, to: hovered.endDate))  \(lvl)%\(hovered.isCharging || hovered.isPlugged ? " ⚡" : "")")
+                                    .font(.system(size: 11, weight: .regular))
+                                    .foregroundColor(.secondary)
+                                    .transition(.opacity)
+                            }
                         } else if !isCollapsed {
-                            Text("•  \(L10n.tr("history.past24h"))")
+                            Text("•  \(selectedRange == .sevenDays ? L10n.tr("history.past7d") : L10n.tr("history.past24h"))")
                                 .font(.system(size: 11, weight: .regular))
                                 .foregroundColor(.secondary)
                         }
@@ -67,47 +85,111 @@ struct BatteryHistoryView: View {
                 }
                 .buttonStyle(.plain)
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                if !isCollapsed && availableDevices.count > 1 {
-                    Menu {
-                        ForEach(availableDevices, id: \.key) { dev in
-                            Button {
-                                selectedDeviceKey = dev.key
-                            } label: {
-                                Label(dev.name, systemImage: dev.icon)
+                if !isCollapsed {
+                    // Range Segmented Switcher (24h / 7d)
+                    HStack(spacing: 1) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                selectedRange = .twentyFourHours
+                                UserDefaults.standard.set("24h", forKey: "batteryHistory.range")
+                                hoveredBucket = nil
                             }
+                        } label: {
+                            Text(L10n.tr("history.range_24h"))
+                                .font(.system(size: 10, weight: selectedRange == .twentyFourHours ? .semibold : .regular))
+                                .foregroundColor(selectedRange == .twentyFourHours ? .primary : .secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(
+                                    selectedRange == .twentyFourHours ?
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(Color.primary.opacity(0.12)) : nil
+                                )
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? "Mac")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.secondary)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary)
+                        .buttonStyle(.plain)
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                selectedRange = .sevenDays
+                                UserDefaults.standard.set("7d", forKey: "batteryHistory.range")
+                                hoveredBucket = nil
+                            }
+                        } label: {
+                            Text(L10n.tr("history.range_7d"))
+                                .font(.system(size: 10, weight: selectedRange == .sevenDays ? .semibold : .regular))
+                                .foregroundColor(selectedRange == .sevenDays ? .primary : .secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(
+                                    selectedRange == .sevenDays ?
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(Color.primary.opacity(0.12)) : nil
+                                )
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.06))
-                        .cornerRadius(5)
+                        .buttonStyle(.plain)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    .padding(2)
+                    .background(Color.primary.opacity(0.06))
+                    .cornerRadius(6)
+
+                    // Device Picker (if > 1 device)
+                    if availableDevices.count > 1 {
+                        Menu {
+                            ForEach(availableDevices, id: \.key) { dev in
+                                Button {
+                                    selectedDeviceKey = dev.key
+                                    hoveredBucket = nil
+                                } label: {
+                                    Label(dev.name, systemImage: dev.icon)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(availableDevices.first(where: { $0.key == selectedDeviceKey })?.name ?? "Mac")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 8))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.primary.opacity(0.06))
+                            .cornerRadius(5)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
                 }
             }
 
             if !isCollapsed {
-                let buckets = historyStore.timelineBuckets(for: selectedDeviceKey)
-                let spans = historyStore.chargingSpans(for: buckets)
+                switch selectedRange {
+                case .twentyFourHours:
+                    let buckets = historyStore.timelineBuckets(for: selectedDeviceKey)
+                    let spans = historyStore.chargingSpans(for: buckets)
 
-                BatteryTimelineChart(
-                    buckets: buckets,
-                    chargingSpans: spans,
-                    hoveredBucket: $hoveredBucket
-                )
-                .frame(height: 104)
-                .padding(.top, 2)
+                    BatteryTimelineChart(
+                        buckets: buckets,
+                        chargingSpans: spans,
+                        hoveredBucket: $hoveredBucket
+                    )
+                    .frame(height: 104)
+                    .padding(.top, 2)
+
+                case .sevenDays:
+                    let buckets = historyStore.sevenDaysTimelineBuckets(for: selectedDeviceKey)
+
+                    BatterySevenDaysLineChart(
+                        buckets: buckets,
+                        referenceDate: Date(),
+                        hoveredBucket: $hoveredBucket
+                    )
+                    .frame(height: 104)
+                    .padding(.top, 2)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -126,13 +208,36 @@ struct BatteryHistoryView: View {
         return f
     }()
 
+    private static let sevenDaysHoverFormatterZh: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日 (EEE) HH:mm"
+        return f
+    }()
+
+    private static let sevenDaysHoverFormatterEn: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, HH:mm"
+        return f
+    }()
+
     private func formatTimeRange(from start: Date, to end: Date) -> String {
         let f = Self.timeRangeFormatter
         return "\(f.string(from: start))-\(f.string(from: end))"
     }
+
+    private func formatSevenDaysHover(_ date: Date) -> String {
+        let isZh = Locale.current.language.languageCode?.identifier == "zh"
+        if isZh {
+            return Self.sevenDaysHoverFormatterZh.string(from: date)
+        } else {
+            return Self.sevenDaysHoverFormatterEn.string(from: date)
+        }
+    }
 }
 
-// MARK: - Battery Timeline Chart
+// MARK: - Battery Timeline Chart (24 Hours)
 
 private struct BatteryTimelineChart: View {
     let buckets: [BatteryTimelineBucket]
@@ -320,6 +425,211 @@ private struct BatteryTimelineChart: View {
             if hour == 12 { return "12P" }
             return "\(hour % 12)"
         }
+    }
+}
+
+// MARK: - Battery Seven Days Line Chart (7 Days)
+
+private struct BatterySevenDaysLineChart: View {
+    let buckets: [BatteryTimelineBucket]
+    let referenceDate: Date
+    @Binding var hoveredBucket: BatteryTimelineBucket?
+
+    private static let batteryGreen = Color(red: 52/255, green: 199/255, blue: 89/255)
+
+    var body: some View {
+        GeometryReader { geo in
+            let totalW = geo.size.width
+            let yAxisW: CGFloat = 32
+            let chartW = max(10, totalW - yAxisW)
+            let chartH: CGFloat = 62
+            let timeLabelsH: CGFloat = 16
+
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    ZStack(alignment: .topLeading) {
+                        // 1. Horizontal dashed grid lines (100%, 50%, 0%)
+                        GridLinesView(width: chartW, height: chartH)
+
+                        // 2. Vertical day boundary lines (6 vertical lines dividing 7 days)
+                        Canvas { ctx, size in
+                            for day in 1..<7 {
+                                let x = (CGFloat(day) / 7.0) * size.width
+                                var p = Path()
+                                p.move(to: CGPoint(x: x, y: 0))
+                                p.addLine(to: CGPoint(x: x, y: size.height))
+                                ctx.stroke(p, with: .color(Color.primary.opacity(0.10)),
+                                           style: StrokeStyle(lineWidth: 0.8, dash: [2, 3]))
+                            }
+                        }
+                        .frame(width: chartW, height: chartH)
+
+                        // 3. Line Chart with Gradient Fill
+                        Canvas { ctx, size in
+                            guard buckets.count > 1 else { return }
+
+                            var currentSegment: [(index: Int, point: CGPoint)] = []
+                            var segments: [[(index: Int, point: CGPoint)]] = []
+
+                            let totalIndices = CGFloat(max(1, buckets.count - 1))
+                            for (idx, b) in buckets.enumerated() {
+                                if let lvl = b.level {
+                                    let x = (CGFloat(idx) / totalIndices) * size.width
+                                    let y = (1.0 - (CGFloat(lvl) / 100.0)) * (size.height - 4) + 2
+                                    currentSegment.append((idx, CGPoint(x: x, y: y)))
+                                } else {
+                                    if !currentSegment.isEmpty {
+                                        segments.append(currentSegment)
+                                        currentSegment = []
+                                    }
+                                }
+                            }
+                            if !currentSegment.isEmpty {
+                                segments.append(currentSegment)
+                            }
+
+                            for seg in segments {
+                                guard !seg.isEmpty else { continue }
+
+                                if seg.count == 1 {
+                                    let pt = seg[0].point
+                                    let dotPath = Path(ellipseIn: CGRect(x: pt.x - 2.5, y: pt.y - 2.5, width: 5, height: 5))
+                                    ctx.fill(dotPath, with: .color(Self.batteryGreen))
+                                    continue
+                                }
+
+                                // 3a. Gradient fill under curve
+                                var fillPath = Path()
+                                fillPath.move(to: CGPoint(x: seg[0].point.x, y: size.height))
+                                for item in seg {
+                                    fillPath.addLine(to: item.point)
+                                }
+                                fillPath.addLine(to: CGPoint(x: seg.last!.point.x, y: size.height))
+                                fillPath.closeSubpath()
+
+                                let gradient = Gradient(stops: [
+                                    .init(color: Self.batteryGreen.opacity(0.32), location: 0.0),
+                                    .init(color: Self.batteryGreen.opacity(0.02), location: 1.0)
+                                ])
+                                ctx.fill(fillPath, with: .linearGradient(gradient,
+                                                                         startPoint: CGPoint(x: 0, y: 0),
+                                                                         endPoint: CGPoint(x: 0, y: size.height)))
+
+                                // 3b. Line stroke
+                                var linePath = Path()
+                                linePath.move(to: seg[0].point)
+                                for item in seg.dropFirst() {
+                                    linePath.addLine(to: item.point)
+                                }
+                                ctx.stroke(linePath, with: .color(Self.batteryGreen),
+                                           style: StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+                            }
+                        }
+                        .frame(width: chartW, height: chartH)
+
+                        // 4. Hover Scrubber: Guide line + glowing dot
+                        if let hovered = hoveredBucket, let lvl = hovered.level {
+                            let totalIndices = CGFloat(max(1, buckets.count - 1))
+                            let x = (CGFloat(hovered.id) / totalIndices) * chartW
+                            let y = (1.0 - (CGFloat(lvl) / 100.0)) * (chartH - 4) + 2
+
+                            // Vertical hairline
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.35))
+                                .frame(width: 1, height: chartH)
+                                .offset(x: x, y: 0)
+
+                            // Glowing dot
+                            ZStack {
+                                Circle()
+                                    .fill(Self.batteryGreen.opacity(0.28))
+                                    .frame(width: 14, height: 14)
+
+                                Circle()
+                                    .fill(Self.batteryGreen)
+                                    .frame(width: 7, height: 7)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color(NSColor.windowBackgroundColor), lineWidth: 1.5)
+                                    )
+                            }
+                            .offset(x: x - 7, y: y - 7)
+                        }
+                    }
+                    .frame(width: chartW, height: chartH)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            guard !buckets.isEmpty, chartW > 0 else { return }
+                            let ratio = min(max(location.x / chartW, 0), 0.999)
+                            let index = Int(ratio * CGFloat(buckets.count))
+                            if buckets.indices.contains(index) {
+                                hoveredBucket = buckets[index]
+                            }
+                        case .ended:
+                            hoveredBucket = nil
+                        }
+                    }
+
+                    // 5. Bottom spacing and X-axis Day labels (7 days evenly distributed)
+                    Spacer().frame(height: 14)
+
+                    HStack(spacing: 0) {
+                        ForEach(0..<7, id: \.self) { day in
+                            let label = dayLabel(for: day)
+                            Text(label)
+                                .font(.system(size: 9, weight: .regular))
+                                .foregroundColor(.secondary)
+                                .frame(width: chartW / 7.0, alignment: .center)
+                        }
+                    }
+                    .frame(width: chartW, height: timeLabelsH, alignment: .center)
+                }
+
+                // Y-axis labels on the right (100%, 50%, 0%)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("100%")
+                        .font(.system(size: 8, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .frame(height: 10, alignment: .top)
+
+                    Spacer()
+
+                    Text("50%")
+                        .font(.system(size: 8, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .frame(height: 10, alignment: .center)
+
+                    Spacer()
+
+                    Text("0%")
+                        .font(.system(size: 8, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .frame(height: 10, alignment: .bottom)
+                }
+                .frame(width: yAxisW, height: chartH, alignment: .trailing)
+                .padding(.leading, 4)
+            }
+        }
+    }
+
+    private func dayLabel(for dayIndex: Int) -> String {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        guard let date = calendar.date(byAdding: .day, value: dayIndex - 6, to: todayStart) else {
+            return ""
+        }
+        if calendar.isDateInToday(date) {
+            return L10n.tr("history.today")
+        }
+        if calendar.isDateInYesterday(date) {
+            return L10n.tr("history.yesterday")
+        }
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "EEE"
+        return f.string(from: date)
     }
 }
 

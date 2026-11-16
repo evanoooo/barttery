@@ -79,7 +79,7 @@ final class BatteryHistoryStore: ObservableObject {
     private let saveQueue = DispatchQueue(label: "me.yura.barttery.history.save", qos: .utility)
     private var isDirty = false
 
-    private static let retentionHours: TimeInterval = 48
+    private static let retentionHours: TimeInterval = 216 // 9 days retention for 7-day view support
     private static let bucketMinutes: Int = 15
     private static let totalBuckets24h: Int = 96
 
@@ -223,6 +223,80 @@ final class BatteryHistoryStore: ObservableObject {
             } else if let prev = lastKnownLevel, let prevDate = lastKnownSampleDate,
                       bEnd.timeIntervalSince(prevDate) <= 8 * 3600 {
                 // Carry forward if within 8 hours of last observation
+                let nextSample = samples.first(where: { $0.date >= bEnd })
+                let wasCharging = (nextSample?.isCharging == true && (nextSample?.level ?? 0) > UInt8(prev))
+                level = prev
+                isCharging = wasCharging
+                isPlugged = wasCharging || (nextSample?.isPlugged == true)
+            } else {
+                level = nil
+                isCharging = false
+                isPlugged = false
+            }
+
+            buckets.append(BatteryTimelineBucket(
+                id: i,
+                startDate: bStart,
+                endDate: bEnd,
+                level: level,
+                isCharging: isCharging,
+                isPlugged: isPlugged
+            ))
+        }
+
+        return buckets
+    }
+
+    func sevenDaysTimelineBuckets(for device: String, referenceDate: Date = Date(),
+                                  bucketMinutes: Int = 60) -> [BatteryTimelineBucket] {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        let timelineStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart.addingTimeInterval(-6 * 86400)
+        let bucketDuration = TimeInterval(bucketMinutes * 60)
+        let totalCount = (7 * 24 * 60) / bucketMinutes
+
+        let samples = samplesByDevice[device] ?? []
+        var buckets: [BatteryTimelineBucket] = []
+        buckets.reserveCapacity(totalCount)
+
+        var lastKnownLevel: Int? = nil
+        var lastKnownSampleDate: Date? = nil
+
+        if let prior = samples.last(where: { $0.date <= timelineStart }) {
+            lastKnownLevel = Int(prior.level)
+            lastKnownSampleDate = prior.date
+        }
+
+        for i in 0..<totalCount {
+            let bStart = timelineStart.addingTimeInterval(TimeInterval(i) * bucketDuration)
+            let bEnd   = bStart.addingTimeInterval(bucketDuration)
+
+            if bStart > referenceDate {
+                buckets.append(BatteryTimelineBucket(
+                    id: i,
+                    startDate: bStart,
+                    endDate: bEnd,
+                    level: nil,
+                    isCharging: false,
+                    isPlugged: false
+                ))
+                continue
+            }
+
+            let inBucket = samples.filter { $0.date >= bStart && $0.date < bEnd }
+
+            let level: Int?
+            let isCharging: Bool
+            let isPlugged: Bool
+
+            if let latest = inBucket.last {
+                level = Int(latest.level)
+                isCharging = inBucket.contains(where: { $0.isCharging })
+                isPlugged = inBucket.contains(where: { $0.isPlugged })
+                lastKnownLevel = level
+                lastKnownSampleDate = latest.date
+            } else if let prev = lastKnownLevel, let prevDate = lastKnownSampleDate,
+                      bEnd.timeIntervalSince(prevDate) <= 16 * 3600 {
                 let nextSample = samples.first(where: { $0.date >= bEnd })
                 let wasCharging = (nextSample?.isCharging == true && (nextSample?.level ?? 0) > UInt8(prev))
                 level = prev

@@ -146,4 +146,45 @@ final class BatteryHistoryTests: XCTestCase {
         store.record(device: "phone_test", level: 91, isCharging: true, at: t0.addingTimeInterval(55))
         XCTAssertEqual(store.samplesByDevice["phone_test"]?.count, 2)
     }
+
+    // MARK: - 7 Days Timeline Tests
+
+    func testSevenDaysTimelineBucketsCountAndSpan() {
+        let store = BatteryHistoryStore()
+        let calendar = Calendar.current
+        let todayNoon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: Date())!
+
+        let buckets = store.sevenDaysTimelineBuckets(for: "mac", referenceDate: todayNoon)
+        XCTAssertEqual(buckets.count, 168, "Must produce 168 1-hour buckets for 7 days")
+
+        let todayStart = calendar.startOfDay(for: todayNoon)
+        let expectedStart = calendar.date(byAdding: .day, value: -6, to: todayStart)!
+        XCTAssertEqual(buckets.first?.startDate, expectedStart)
+
+        // Buckets after referenceDate should be nil
+        let futureBuckets = buckets.filter { $0.startDate > todayNoon }
+        XCTAssertFalse(futureBuckets.isEmpty)
+        for b in futureBuckets {
+            XCTAssertNil(b.level, "Future buckets in 7-day view must be nil")
+        }
+    }
+
+    func testSevenDaysTimelineCarriesForward() {
+        let store = BatteryHistoryStore()
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        let threeDaysAgo = calendar.date(byAdding: .day, value: -3, to: todayStart)!.addingTimeInterval(10 * 3600) // 10:00 AM
+
+        store.record(device: "mac_7d", level: 95, isCharging: false, at: threeDaysAgo)
+
+        let refDate = threeDaysAgo.addingTimeInterval(5 * 3600) // 15:00 PM
+        let buckets = store.sevenDaysTimelineBuckets(for: "mac_7d", referenceDate: refDate)
+
+        // Find bucket at 12:00 PM on that day (2h after sample)
+        let bucketAtNoon = buckets.first(where: {
+            abs($0.startDate.timeIntervalSince(threeDaysAgo.addingTimeInterval(2 * 3600))) < 1800
+        })
+        XCTAssertNotNil(bucketAtNoon)
+        XCTAssertEqual(bucketAtNoon?.level, 95)
+    }
 }
