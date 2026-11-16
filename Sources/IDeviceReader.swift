@@ -50,6 +50,7 @@ class IDeviceReader: NSObject {
         staleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.checkStale()
         }
+        staleTimer?.tolerance = 3
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(onWake),
@@ -432,14 +433,20 @@ class IDeviceReader: NSObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
         proc.arguments = args
-        let out = Pipe(), err = Pipe()
+        let out = Pipe()
         proc.standardOutput = out
-        proc.standardError  = err
+        // Drain stderr to nullDevice to prevent deadlock when child process outputs >64KB
+        proc.standardError  = FileHandle.nullDevice
+
+        let sema = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in
+            sema.signal()
+        }
+
         do {
             try proc.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while proc.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-            if proc.isRunning {
+            let waitResult = sema.wait(timeout: .now() + timeout)
+            if waitResult == .timedOut && proc.isRunning {
                 Self.stopTimedOutHelper(proc)
             }
             return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""

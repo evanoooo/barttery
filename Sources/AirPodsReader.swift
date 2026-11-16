@@ -2,8 +2,10 @@ import CoreBluetooth
 import Foundation
 import IOBluetooth
 import ObjectiveC
+import AppKit
+import os
 
-struct AirPodsBattery {
+struct AirPodsBattery: Equatable {
     let left:  Int?   // 0-100, nil = not visible (in case / unavailable)
     let right: Int?
     let `case`: Int?
@@ -19,27 +21,36 @@ struct AirPodsBattery {
     }
 }
 
-// Reads AirPods battery via BLE Proximity Pairing advertisements (Apple proprietary).
-//
-// Case visibility rule (derived from charging-bits field):
-//   chargingBits == 0xF  →  case not connected (pods in ears)  →  show pods, hide case
-//   chargingBits != 0xF  →  case connected (pods in case)      →  show case, hide pods
-//
-// Disappear rule: if no advertisement is received for 10 s (closed case stops broadcasting
-// aggressively once the host is no longer looking for new devices), hide the row.
-//
-// Battery levels: plist written by audioaccessoryd (1 % precision) with BLE nibbles as fallback.
+// Reads AirPods & Case battery via:
+// 1. Apple daemon plist written by audioaccessoryd (high precision 1%, persists in-case & nearby readings)
+// 2. BLE Proximity Pairing advertisements (Apple proprietary 0x004c 0x07)
+// 3. Bluetooth Classic paired device monitoring
 class AirPodsReader: NSObject, CBCentralManagerDelegate {
+    private static let logger = Logger(subsystem: "me.yura.barttery", category: "AirPods")
     var onUpdate: ((AirPodsBattery?) -> Void)?
     var onConnect: ((String) -> Void)?
 
-    private static let hideTimeout: TimeInterval = 10
+    private static let deviceStaleTimeout: TimeInterval = 14400.0 // 4 hours
 
     private var central: CBCentralManager?
-    private var hideTimer: Timer?
     private var syncTimer: Timer?
     private var plistLevels: PlistLevels?
     private var lastBattery: AirPodsBattery?
+    private var cachedBTDevice: IOBluetoothDevice?
+    private(set) var isScanning = false
+
+    // Known Bluetooth addresses identified as Apple Audio Accessories
+    private static var knownAccessoryAddresses: Set<String> = []
+
+    // Stable battery & charging persistence: hold readings across BLE packet drops and closed lid
+    private var lastLeftBattery: Int?
+    private var lastRightBattery: Int?
+    private var lastCaseBattery: Int?
+    private var lastCaseSeenDate: Date?
+    private var lastCaseCharging: Bool?
+    private var lastCaseChargingDate: Date?
+    private var lastPodCharging: Bool?
+    private var lastChargingSeenDate: Date?
 
     // Cached selectors for framework parsing
     private let selAlloc    = NSSelectorFromString("alloc")
@@ -51,55 +62,124 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let left: Int?
         let right: Int?
         let cas: Int?
+        let leftCharging: Bool
+        let rightCharging: Bool
+        let caseCharging: Bool
+        let lastSeen: Date
+    }
+
+    static func isAirPods(name: String?, address: String?) -> Bool {
+        if let lower = name?.lowercased() {
+            if lower.contains("airpod") || lower.contains("beats") || lower.contains("powerbeats") {
+                return true
+            }
+        }
+        if let addr = address?.replacingOccurrences(of: "-", with: ":").uppercased() {
+            if knownAccessoryAddresses.contains(addr) {
+                return true
+            }
+        }
+        return false
     }
 
     func startMonitoring() {
         dlopen("/System/Library/PrivateFrameworks/AudioAccessoryServices.framework/AudioAccessoryServices", RTLD_NOW)
         advClass = NSClassFromString("AAManufacturerDataAdvertisement") as? NSObject.Type
+        
+        // Initial read of system audioaccessoryd state
         refreshPlist()
         watchPlist()
+        
+        cachedBTDevice = findPairedDevice()
+        if let name = cachedBTDevice?.name {
+            onConnect?(name)
+        }
+
         central = CBCentralManager(delegate: self, queue: .main)
         IOBluetoothDevice.register(forConnectNotifications: self, selector: #selector(bluetoothDeviceConnected(_:device:)))
         if let device = btDevice(), device.isConnected() {
             device.register(forDisconnectNotification: self, selector: #selector(bluetoothDeviceDisconnected(_:device:)))
         }
-        syncTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
-            self?.refreshPlist()
-            if let battery = self?.lastBattery {
-                self?.onUpdate?(battery)
+
+        // Periodic sync to check plist every 30 seconds
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.refreshPlist()
+            if let battery = self.lastBattery {
+                self.onUpdate?(battery)
             }
         }
+        syncTimer?.tolerance = 10
+
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(handleSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleWake), name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    @objc private func handleSleep() {
+        stopScanning()
+    }
+
+    @objc private func handleWake() {
+        cachedBTDevice = findPairedDevice()
+        refreshPlist()
+        startScanning()
+    }
+
+    func startScanning() {
+        guard let central = central, central.state == .poweredOn, !isScanning else { return }
+        isScanning = true
+        central.scanForPeripherals(withServices: nil, options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: true
+        ])
+    }
+
+    func stopScanning() {
+        guard let central = central, isScanning else { return }
+        isScanning = false
+        central.stopScan()
     }
 
     @objc private func bluetoothDeviceConnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        guard let name = device.name, name.lowercased().contains("airpod") else { return }
+        guard let name = device.name else { return }
+        guard Self.isAirPods(name: name, address: device.addressString) else { return }
+        Self.logger.notice("AirPods Bluetooth connected: \(name)")
+        cachedBTDevice = device
         device.register(forDisconnectNotification: self, selector: #selector(bluetoothDeviceDisconnected(_:device:)))
         DispatchQueue.main.async { [weak self] in
             self?.onConnect?(name)
             self?.refreshPlist()
+            self?.startScanning()
         }
     }
 
     @objc private func bluetoothDeviceDisconnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        hideTimer?.invalidate()
-        lastBattery = nil
-        onUpdate?(nil)
+        Self.logger.notice("AirPods Bluetooth disconnected: \(device.name ?? "Unknown")")
+        cachedBTDevice = nil
+        // Do not clear lastBattery! The AirPods are simply in the case or disconnected from audio.
+        // Refresh plist to check for in-case battery updates.
+        refreshPlist()
+        if let battery = lastBattery {
+            onUpdate?(battery)
+        }
     }
 
     // MARK: - CBCentralManagerDelegate
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        guard central.state == .poweredOn else { return }
-        central.scanForPeripherals(withServices: nil, options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: true
-        ])
+        guard central.state == .poweredOn else {
+            isScanning = false
+            return
+        }
+        startScanning()
     }
 
     func centralManager(_ central: CBCentralManager,
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
-        guard RSSI.intValue > -70 else { return }
+        // -75 dBm: strong nearby proximity (placed right next to Mac)
+        guard RSSI.intValue > -75 else { return }
 
         guard let mfr = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
               mfr.count >= 10,
@@ -107,28 +187,21 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
               mfr[2] == 0x07
         else { return }
 
-        // Check lid state off the main thread to avoid retain issues with the framework.
-        // The result arrives on main and gates whether we proceed.
         let mfrCopy = mfr
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let lidClosed = self?.isLidClosed(mfrCopy) ?? false
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if lidClosed {
-                    // Lid is shut: pods not in use, hide the row and arm the timer
-                    // so it hides even if lid is opened slowly while still in range
-                    self.resetHideTimer()
-                    self.onUpdate?(nil)
-                    return
-                }
-                self.handleAdvertisement(mfrCopy)
+                self.handleAdvertisement(mfrCopy, lidClosed: lidClosed)
             }
         }
     }
 
-    private func handleAdvertisement(_ mfr: Data) {
-        guard isConnected else { return }
-        resetHideTimer()
+    private func handleAdvertisement(_ mfr: Data, lidClosed: Bool) {
+        // Only process if we have paired AirPods or plist data
+        if !isConnected && findPairedDevice() == nil && plistLevels == nil {
+            return
+        }
 
         let status       = mfr[7]
         let flip         = (status & 0x20) != 0
@@ -143,45 +216,67 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let leftRaw  = flip ? podHi : podLo
         let rightRaw = flip ? podLo : podHi
 
-        // chargingBits == 0xF → case not connected → pods are in ears
-        let inCase = chargingBits != 0xF
+        if leftRaw < 0xF {
+            lastLeftBattery = plistLevels?.left ?? min(leftRaw * 10, 100)
+        }
+        if rightRaw < 0xF {
+            lastRightBattery = plistLevels?.right ?? min(rightRaw * 10, 100)
+        }
 
-        let leftBat:  Int?
-        let rightBat: Int?
-        let caseBat:  Int?
+        let now = Date()
 
-        // When inCase: show pods + case; when in ears: show pods only, hide case
-        leftBat  = plistLevels?.left  ?? (leftRaw  < 0xF ? min(leftRaw  * 10, 100) : nil)
-        rightBat = plistLevels?.right ?? (rightRaw < 0xF ? min(rightRaw * 10, 100) : nil)
-        caseBat  = inCase ? (plistLevels?.cas ?? (caseV < 0xF ? min(caseV * 10, 100) : nil)) : nil
+        // Case presence & hysteresis:
+        let caseInPacket = caseV < 0xF
+        let chargingValid = chargingBits < 0xF
+
+        if caseInPacket {
+            let caseVal = plistLevels?.cas ?? min(caseV * 10, 100)
+            lastCaseBattery = caseVal
+            lastCaseSeenDate = now
+        }
+
+        if chargingValid {
+            lastCaseCharging = (chargingBits & 0x04) != 0
+            lastCaseChargingDate = now
+            let podBits = (chargingBits & 0x03) != 0
+            if podBits || lidClosed {
+                lastPodCharging = true
+                lastChargingSeenDate = now
+            } else if caseInPacket {
+                lastPodCharging = false
+                lastChargingSeenDate = now
+            }
+        }
+
+        let leftBat:  Int? = plistLevels?.left  ?? lastLeftBattery
+        let rightBat: Int? = plistLevels?.right ?? lastRightBattery
+        let caseBat:  Int? = plistLevels?.cas   ?? lastCaseBattery
 
         guard leftBat != nil || rightBat != nil || caseBat != nil else { return }
 
-        let validCharging = chargingBits < 0xF
-        // flip alternates between packets as the primary pod switches, making per-pod
-        // charging bits jump L↔R. Both pods charge together in the case anyway,
-        // so show charging on both whenever either pod-charging bit is set.
-        let anyPodCharging = validCharging && (chargingBits & 0x03) != 0
-        let leftCharging  = anyPodCharging
-        let rightCharging = anyPodCharging
-        let caseCharging  = false
+        let isPodCharging = lastPodCharging ?? (plistLevels?.leftCharging == true || plistLevels?.rightCharging == true)
+        let leftCharging  = isPodCharging
+        let rightCharging = isPodCharging
+        let caseCharging  = lastCaseCharging ?? (plistLevels?.caseCharging == true)
+
+        Self.logger.debug("AirPods packet: flip=\(flip) lidClosed=\(lidClosed) pods=\(String(format: "%02X", pods)) caseData=\(String(format: "%02X", caseData)) -> L:\(leftBat ?? -1) R:\(rightBat ?? -1) Case:\(caseBat ?? -1) Chg:\(isPodCharging)")
 
         let battery = AirPodsBattery(
             left: leftBat, right: rightBat, case: caseBat,
             leftCharging: leftCharging, rightCharging: rightCharging, caseCharging: caseCharging
         )
         guard !battery.isEqual(to: lastBattery) else { return }
+
+        Self.logger.notice("AirPods state changed: L=\(leftBat.map(String.init) ?? "nil")%, R=\(rightBat.map(String.init) ?? "nil")%, Case=\(caseBat.map(String.init) ?? "nil")%, Charging=\(isPodCharging)")
+
         lastBattery = battery
         onUpdate?(battery)
     }
 
     // MARK: - Lid closed detection
 
-    // Called on a background thread to avoid retain-cycle crash in BLE callback.
-    // Uses alloc+init split with correct ownership: alloc is unretained (init consumes it).
     private func isLidClosed(_ mfr: Data) -> Bool {
         guard let cls = advClass else { return false }
-        // takeUnretainedValue on alloc: init will consume the +1, so we must not take it here
         guard let obj = cls.perform(selAlloc)?.takeUnretainedValue() as? NSObject else { return false }
         guard let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject else { return false }
         guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
@@ -189,26 +284,12 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         return (payload as AnyObject).value(forKey: "lidClosed") as? Int == 1
     }
 
-    // MARK: - Hide timer
-
-    private func resetHideTimer() {
-        hideTimer?.invalidate()
-        hideTimer = Timer.scheduledTimer(withTimeInterval: Self.hideTimeout, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            // AirPods reduce BLE advertisement rate during active audio — keep showing
-            // last known levels as long as IOBluetooth still reports them connected.
-            // The disconnect notification handles actual removal.
-            if !self.isConnected { self.onUpdate?(nil) }
-        }
-    }
-
     // MARK: - Plist (high-precision battery from audioaccessoryd)
 
     private let prefPath = NSHomeDirectory() + "/Library/Preferences/com.apple.AudioAccessory.plist"
     private var fileWatcher: DispatchSourceFileSystemObject?
-    // If plist hasn't been modified in 30 min, treat as stale and fall back to BLE.
-    // Prevents pre-macOS-update cached values from overriding live BLE data.
-    private let staleTimeout: TimeInterval = 1800
+    // Staleness: 4 hours (AirPods in closed case on desk can rest without losing reading)
+    private let staleTimeout: TimeInterval = 14400
 
     private func watchPlist() {
         let fd = open(prefPath, O_RDONLY)
@@ -227,33 +308,54 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         fileWatcher = src
     }
 
-    private func refreshPlist() {
-        // Staleness guard: if the file hasn't been touched recently, BLE data is more accurate
+    func refreshPlist() {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: prefPath),
            let mod = attrs[.modificationDate] as? Date,
            Date().timeIntervalSince(mod) > staleTimeout {
-            plistLevels = nil
+            // Only drop if older than stale timeout
             return
         }
 
-        guard let prefs = NSDictionary(contentsOfFile: prefPath) else {
-            plistLevels = nil; return
+        guard let prefs = NSDictionary(contentsOfFile: prefPath) else { return }
+        
+        // Also extract known accessory addresses from lowBatteryDevices
+        if let lowDevices = prefs["lowBatteryDevices"] as? [[String: Any]] {
+            for d in lowDevices {
+                if let addr = d["deviceAddress"] as? String {
+                    Self.knownAccessoryAddresses.insert(addr.uppercased())
+                }
+            }
         }
-        // Try V3 key first (macOS 26+), fall back to V2
+
         let outerData = (prefs["lastSeenBatteryInfosV3"] as? Data)
                      ?? (prefs["lastSeenBatteryInfosV2"] as? Data)
-        guard let outerData else { plistLevels = nil; return }
+        guard let outerData else { return }
 
-        // The archive may contain multiple entries for the same physical device (one per
-        // connection session). Parse $objects directly to find the one with the highest
-        // lstS (CFAbsoluteTime last-seen), then read btyl (battery level 0–1) from it.
-        // Field names: bale=left, bari=right, baca=case (ba+le/ri/ca abbreviations).
         if let levels = plistLevelsFromArchive(outerData) {
             plistLevels = levels
+            if let l = levels.left { lastLeftBattery = l }
+            if let r = levels.right { lastRightBattery = r }
+            if let c = levels.cas {
+                lastCaseBattery = c
+                lastCaseSeenDate = Date()
+            }
+            lastCaseCharging = levels.caseCharging
+            lastPodCharging = levels.leftCharging || levels.rightCharging
+
+            let battery = AirPodsBattery(
+                left: levels.left ?? lastLeftBattery,
+                right: levels.right ?? lastRightBattery,
+                case: levels.cas ?? lastCaseBattery,
+                leftCharging: levels.leftCharging,
+                rightCharging: levels.rightCharging,
+                caseCharging: levels.caseCharging
+            )
+            if !battery.isEqual(to: lastBattery) {
+                lastBattery = battery
+                onUpdate?(battery)
+            }
             return
         }
-
-        plistLevels = nil
     }
 
     private func plistLevelsFromArchive(_ data: Data) -> PlistLevels? {
@@ -262,7 +364,6 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
               let objects = archive["$objects"] as? NSArray
         else { return nil }
 
-        // CFKeyedArchiverUID description: "<CFKeyedArchiverUID 0x...>{value = N}"
         func uidIndex(_ v: Any?) -> Int? {
             guard let obj = v as? NSObject else { return nil }
             let desc = obj.description
@@ -287,12 +388,20 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                   className(d) == "AADeviceBatteryInfo"
             else { continue }
 
+            // Extract Bluetooth address if present
+            if let btaUID = uidIndex(d["bta"]), btaUID > 0, btaUID < objects.count,
+               let btaStr = objects[btaUID] as? String {
+                Self.knownAccessoryAddresses.insert(btaStr.uppercased())
+            }
+
             var maxLstS: Double = 0
             var lv = [String: Double]()
+            var chg = [String: Bool]()
             for field in ["bale", "bari", "baca"] {
                 guard let bat = resolveObj(d[field]) else { continue }
                 if let t = bat["lstS"] as? Double { maxLstS = max(maxLstS, t) }
                 if let l = bat["btyl"] as? Double { lv[field] = l }
+                if let aabs = bat["aabs"] as? Int { chg[field] = (aabs == 2) }
             }
             guard maxLstS > bestLstS else { continue }
             bestLstS = maxLstS
@@ -301,33 +410,39 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 guard let v = lv[f], v > 0 else { return nil }
                 return Int(ceil(v * 100)).clamped(to: 1...100)
             }
-            bestLevels = PlistLevels(left: level("bale"), right: level("bari"), cas: level("baca"))
+            bestLevels = PlistLevels(
+                left: level("bale"),
+                right: level("bari"),
+                cas: level("baca"),
+                leftCharging: chg["bale"] ?? false,
+                rightCharging: chg["bari"] ?? false,
+                caseCharging: chg["baca"] ?? false,
+                lastSeen: Date(timeIntervalSinceReferenceDate: maxLstS)
+            )
         }
 
         return bestLevels
     }
 
-    private func plistLevel(_ info: AnyObject, sel: String) -> Int? {
-        let s = NSSelectorFromString(sel)
-        guard info.responds(to: s),
-              let bat = info.perform(s)?.takeUnretainedValue() as AnyObject?,
-              let lvl = bat.value(forKey: "level") as? Double,
-              lvl > 0
-        else { return nil }
-        return Int(ceil(lvl * 100)).clamped(to: 1...100)
-    }
-
     // MARK: - Bluetooth connect / disconnect
 
     var isConnected:  Bool    { btDevice()?.isConnected() ?? false }
-    var deviceName:   String? { btDevice()?.name }
+    var deviceName:   String? { btDevice()?.name ?? findPairedDevice()?.name }
 
     func connect()    { btDevice()?.openConnection()  }
     func disconnect() { btDevice()?.closeConnection() }
 
     private func btDevice() -> IOBluetoothDevice? {
+        if let cached = cachedBTDevice, cached.isConnected() {
+            return cached
+        }
+        cachedBTDevice = findPairedDevice()
+        return cachedBTDevice
+    }
+
+    private func findPairedDevice() -> IOBluetoothDevice? {
         (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice])?.first {
-            $0.name?.lowercased().contains("airpod") == true
+            Self.isAirPods(name: $0.name, address: $0.addressString)
         }
     }
 }

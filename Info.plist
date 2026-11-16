@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.yura.barttery</string>
+    <string>me.yura.barttery</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleName</key>
@@ -30,7 +30,7 @@
     <false/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Used to display AirPods battery levels</string>
-    <key>NSInputMonitoringUsageDescription</key>
-    <string>Used to query Logitech MX mouse battery level and charging state via HID++. You can deny this — the app will still show battery level via Bluetooth.</string>
+    <key>BartteryWidgetsEnabled</key>
+    <true/>
 </dict>
 </plist>

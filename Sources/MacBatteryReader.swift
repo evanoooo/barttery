@@ -21,14 +21,14 @@ class MacBatteryReader {
     var onUpdate: ((MacBattery?) -> Void)?
     private var runLoopSource: CFRunLoopSource?
 
-    nonisolated(unsafe) static weak var shared: MacBatteryReader?
-
     func start() {
-        MacBatteryReader.shared = self
+        let context = Unmanaged.passUnretained(self).toOpaque()
 
-        let src = IOPSNotificationCreateRunLoopSource({ _ in
-            MacBatteryReader.shared?.publish()
-        }, nil)
+        let src = IOPSNotificationCreateRunLoopSource({ ctx in
+            guard let ctx else { return }
+            let reader = Unmanaged<MacBatteryReader>.fromOpaque(ctx).takeUnretainedValue()
+            reader.publish()
+        }, context)
 
         if let src = src?.takeRetainedValue() {
             CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)

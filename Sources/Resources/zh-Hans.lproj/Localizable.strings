@@ -1,0 +1,72 @@
+/* 设备类型 */
+"device.mac" = "MacBook";
+"device.phone" = "iPhone";
+"device.pad" = "iPad";
+"device.watch" = "Apple Watch";
+"device.airpods" = "AirPods";
+"device.keyboard" = "键盘";
+"device.mouse" = "鼠标";
+"device.trackpad" = "触控板";
+"device.headphones" = "耳机";
+
+/* 菜单与通用 */
+"menu.barttery" = "Barttery";
+"menu.refresh" = "刷新";
+"menu.refreshing" = "正在刷新…";
+"menu.launch_at_login" = "开机自启动";
+"menu.update_available" = "发现新版本…";
+"menu.quit" = "退出";
+"menu.settings" = "偏好设置…";
+"menu.cycles" = "%@: %d 次循环";
+
+/* 空状态 */
+"empty.title" = "未检测到电池设备";
+"empty.message" = "请确保已开启蓝牙，或使用数据线连接并信任 iPhone/iPad。";
+
+/* 状态 */
+"status.to_full" = "还需 %@ 充满";
+"status.remaining" = "剩余 %@";
+"status.calculating" = "计算中…";
+"status.charging" = "正在充电";
+"status.plugged" = "已连接电源（未在充电）";
+"status.paused" = "优化电池充电已暂停";
+"status.battery_status" = "电池状态";
+"status.ago" = "%@前";
+"status.in_case" = "在仓内";
+"status.nearby" = "附近";
+"status.disconnected" = "已断开";
+"status.case" = "充电盒";
+"status.paused_badge" = "优化暂停";
+"status.charging_badge" = "充电中";
+
+/* 通知 */
+"notification.notifications" = "电量通知";
+"notification.title.below" = "低电量提醒";
+"notification.body.below" = "%@ 电量已降至 %d%%，请及时充电";
+"notification.title.above" = "充电提醒";
+"notification.body.above" = "%@ 已充至 %d%%";
+"notification.body.fully_charged" = "%@ 已充满电";
+
+/* 通知规则 UI */
+"rules.below_label" = "低于";
+"rules.above_label" = "高于";
+"rules.section_below" = "低于以下电量时提醒：";
+"rules.section_above" = "充至高于以下电量时提醒：";
+"rules.custom" = "自定义…";
+"rules.add" = "添加";
+"rules.add_rule" = "添加电量阈值";
+"rules.enter_percentage" = "百分比 (1–100)";
+"rules.done" = "完成";
+"rules.cancel" = "取消";
+
+/* 设置窗口 */
+"settings.title" = "通知设置";
+"settings.general" = "通用";
+"settings.show_percentage_menubar" = "在状态栏显示电量百分比";
+"settings.devices" = "设备设置";
+"settings.all_devices" = "所有设备 (默认)";
+"settings.sound_alert" = "播放提示音";
+"settings.test_button" = "发送测试通知";
+"settings.test_sent" = "测试通知已发送！";
+"settings.hint_below" = "当设备电量过低时发送提醒。";
+"settings.hint_above" = "当设备达到设定充电目标（如 80% 延长电池寿命或 100% 充满）时发送提醒。";

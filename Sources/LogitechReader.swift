@@ -59,43 +59,24 @@ class LogitechReader {
         return supportedPIDs.values.first { normalized($0) == key }
     }
 
-    private static let skippedKey = "logitech.inputMonitoring.skipped"
-
     func startMonitoring() {
         timer?.invalidate()
+        // Do not request or prompt for Input Monitoring permission.
+        // If granted out-of-band by user, read devices via HID++; otherwise keep completely silent.
         let access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
-        if access == kIOHIDAccessTypeUnknown,
-           !UserDefaults.standard.bool(forKey: Self.skippedKey) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.requestPermissionWithExplanation()
-            }
-        }
+        guard access == kIOHIDAccessTypeGranted else { return }
+
         readDevices()
-        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
             self?.readDevices()
         }
+        timer?.tolerance = 30
     }
 
-    private func requestPermissionWithExplanation() {
-        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted else {
-            readDevices()
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = "Logitech Device Battery"
-        alert.informativeText = "To monitor the battery level and charging status of Logitech devices, Input Monitoring permission is required. Skip this if you don't have any Logitech devices."
-        alert.addButton(withTitle: "Allow")
-        alert.addButton(withTitle: "Skip")
-        alert.alertStyle = .informational
-        if alert.runModal() == .alertFirstButtonReturn {
-            IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-            readDevices()
-        } else {
-            UserDefaults.standard.set(true, forKey: Self.skippedKey)
-        }
+    func refresh() {
+        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else { return }
+        readDevices()
     }
-
-    func refresh() { readDevices() }
 
     /// Seeds the fallback level for a device from an external source (e.g. BLE).
     /// Used so that charging state can be reported even before the first valid HID++ level read.

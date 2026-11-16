@@ -51,6 +51,10 @@ struct MenuContentView: View {
         .scrollContentBackground(.hidden)
         .frame(width: 360, alignment: .top)
         .frame(height: fitted, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor).opacity(0.92))
+        )
         .onPreferenceChange(MenuContentHeightKey.self) { newValue in
             guard abs(newValue - contentHeight) > 0.5 else { return }
             if contentHeight <= 1 {
@@ -79,53 +83,53 @@ struct MenuContentView: View {
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Button {
-                    monitor.refresh()
-                    WidgetSnapshotPublisher.reloadAllWidgets()
-                } label: {
-                    Text("Refresh")
-                        .font(.system(size: 14, weight: .regular))
-                }
-                .buttonStyle(RefreshButtonStyle())
+                RefreshButton(monitor: monitor)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 10)
-
-            VStack(spacing: 18) {
-                if let mac = monitor.macBattery {
-                    DeviceRow(icon: "macbook", name: monitor.macName,
-                              battery: mac.level, state: mac.state, device: .mac)
-                }
-                if let pods = monitor.airPodsBattery {
-                    AirPodsRow(name: monitor.airPodsName, battery: pods)
-                }
-                ForEach(monitor.accessories, id: \.name) { acc in
-                    AccessoryRow(accessory: acc)
-                }
-                if let pct = monitor.phoneBattery {
-                    DeviceRow(icon: "iphone", name: monitor.phoneName,
-                              battery: pct, state: monitor.phoneCharging ? .charging : .discharging, device: .phone)
-                }
-                if let pct = monitor.padBattery {
-                    DeviceRow(icon: "ipad", name: monitor.padName,
-                              battery: pct, state: monitor.padCharging ? .charging : .discharging, device: .pad)
-                }
-                if let watch = monitor.watchBattery {
-                    DeviceRow(icon: "applewatch", name: watch.name,
-                              battery: watch.level, state: watch.isCharging ? .charging : .discharging,
-                              device: .watch, chargingKnown: watch.chargingKnown)
-                }
-            }
-            .padding(.leading, 20)
-            .padding(.trailing, 16)
             .padding(.top, 12)
-            .padding(.bottom, 12)
+            .padding(.bottom, 4)
+
+            if monitor.hasAnyDevices {
+                VStack(spacing: 8) {
+                    if let mac = monitor.macBattery {
+                        DeviceRow(icon: "macbook", name: monitor.displayMacName,
+                                  battery: mac.level, state: mac.state, device: .mac)
+                    }
+                    if let pods = monitor.airPodsBattery {
+                        AirPodsRow(name: monitor.displayAirPodsName, battery: pods, isConnected: monitor.airPodsConnected)
+                    }
+                    ForEach(monitor.accessories, id: \.name) { acc in
+                        AccessoryRow(accessory: acc)
+                    }
+                    if let pct = monitor.phoneBattery {
+                        DeviceRow(icon: "iphone", name: monitor.displayPhoneName,
+                                  battery: pct, state: monitor.phoneCharging ? .charging : .discharging, device: .phone)
+                    }
+                    if let pct = monitor.padBattery {
+                        DeviceRow(icon: "ipad", name: monitor.padName,
+                                  battery: pct, state: monitor.padCharging ? .charging : .discharging, device: .pad)
+                    }
+                    if let watch = monitor.watchBattery {
+                        DeviceRow(icon: "applewatch", name: watch.name,
+                                  battery: watch.level, state: watch.isCharging ? .charging : .discharging,
+                                  device: .watch, chargingKnown: watch.chargingKnown)
+                    }
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 10)
+            } else {
+                EmptyDevicesView()
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
+            }
 
             Button {
                 settings.launchAtLogin.toggle()
             } label: {
                 HStack {
-                    Text("Launch at Login")
+                    Text(L10n.tr("menu.launch_at_login"))
                     Spacer()
                     if settings.launchAtLogin {
                         Image(systemName: "checkmark")
@@ -137,14 +141,32 @@ struct MenuContentView: View {
             .buttonStyle(.plain)
             .font(.system(size: 14, weight: .regular))
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
+
+            Button {
+                SettingsWindowController.shared.show()
+            } label: {
+                HStack {
+                    Text(L10n.tr("menu.settings"))
+                    Spacer()
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 14, weight: .regular))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .keyboardShortcut(",", modifiers: .command)
 
             if updater.isUpdateAvailable {
                 Button {
                     updater.showUpdate()
                 } label: {
                     HStack {
-                        Text("Update Available…")
+                        Text(L10n.tr("menu.update_available"))
                         Spacer()
                         Image(systemName: "arrow.down.circle")
                     }
@@ -153,7 +175,7 @@ struct MenuContentView: View {
                 .buttonStyle(.plain)
                 .font(.system(size: 14, weight: .regular))
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 .disabled(!updater.canCheckForUpdates)
             }
 
@@ -161,16 +183,17 @@ struct MenuContentView: View {
 
             HStack(alignment: .center) {
                 if let cycles = monitor.macBattery?.cycleCount, cycles > 0 {
-                    Text("MacBook: \(cycles) cycles")
+                    Text(L10n.tr("menu.cycles", "MacBook", cycles))
                         .foregroundColor(.secondary)
                         .offset(y: -1)
                 }
                 Spacer()
-                Button("Quit") {
+                Button(L10n.tr("menu.quit")) {
                     NSApplication.shared.terminate(nil)
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: 14, weight: .regular))
+                .keyboardShortcut("q", modifiers: .command)
                 .offset(y: -1)
             }
             .font(.system(size: 14, weight: .regular))
@@ -206,8 +229,8 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let effect = NSVisualEffectView()
-        effect.material = .menu
-        effect.blendingMode = .behindWindow
+        effect.material = .popover
+        effect.blendingMode = .withinWindow
         effect.state = .active
         effect.wantsLayer = true
         effect.layer?.cornerRadius = popupCornerRadius
@@ -250,8 +273,8 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
         guard let start else { return }
         func walk(_ view: NSView) {
             if let effect = view as? NSVisualEffectView {
-                effect.material = .menu
-                effect.blendingMode = .behindWindow
+                effect.material = .popover
+                effect.blendingMode = .withinWindow
                 effect.state = .active
             }
             if #available(macOS 26.0, *),
@@ -306,6 +329,94 @@ private struct MenuBarWindowHeightSync: NSViewRepresentable {
     }
 }
 
+// MARK: - Empty devices view
+
+struct EmptyDevicesView: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "bolt.slash.fill")
+                .font(.system(size: 26))
+                .foregroundColor(.secondary.opacity(0.6))
+                .padding(.top, 6)
+
+            Text(L10n.tr("empty.title"))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.primary)
+
+            Text(L10n.tr("empty.message"))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .padding(.horizontal, 16)
+    }
+}
+
+// MARK: - Relative time formatting
+
+func formatRelativeTime(since date: Date?) -> String? {
+    guard let date = date else { return nil }
+    let elapsed = Date().timeIntervalSince(date)
+    guard elapsed >= 600 else { return nil }
+    let mins = Int(elapsed / 60)
+    if mins < 60 {
+        return "\(mins)m"
+    }
+    let hours = mins / 60
+    return "\(hours)h"
+}
+
+// MARK: - Refresh button
+
+struct RefreshButton: View {
+    @ObservedObject var monitor: DeviceBatteryMonitor
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            guard !monitor.isRefreshing else { return }
+            monitor.refresh()
+            WidgetSnapshotPublisher.reloadAllWidgets()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 14, height: 14)
+                    .rotationEffect(.degrees(monitor.isRefreshing ? 360 : 0))
+                    .animation(
+                        monitor.isRefreshing
+                            ? Animation.linear(duration: 0.85).repeatForever(autoreverses: false)
+                            : .easeOut(duration: 0.2),
+                        value: monitor.isRefreshing
+                    )
+
+                Text(L10n.tr("menu.refresh"))
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(monitor.isRefreshing ? Color.accentColor.opacity(0.12) : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
+            )
+            .foregroundColor(monitor.isRefreshing ? .accentColor : .secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(monitor.isRefreshing)
+        .onHover { isHovered = $0 }
+        .keyboardShortcut("r", modifiers: .command)
+    }
+}
+
 // MARK: - Device row
 
 struct DeviceRow: View {
@@ -317,79 +428,199 @@ struct DeviceRow: View {
     var chargingKnown: Bool = true
 
     @State private var expanded = false
+    @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isLowBattery: Bool {
+        battery <= 20 && (!chargingKnown || state == .discharging)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundColor(.primary)
-                    .frame(width: 26, alignment: .center)
-                    .offset(y: 1.5)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                // Device Icon in soft tinted squircle
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(iconBackgroundColor)
+                        .frame(width: 28, height: 28)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(name).font(.system(size: 17, weight: .regular))
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(iconForegroundColor)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .center) {
+                        Text(name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+
                         Spacer()
+
                         HStack(spacing: 6) {
-                            Image(systemName: chargeIcon ?? "bolt.fill")
-                                .font(.system(size: 12, weight: .medium))
-                                .opacity(chargeIcon != nil ? 1 : 0)
-                                .help("Battery status")
-                            Text("\(battery)%").font(.system(size: 17, weight: .regular))
+                            statusBadge
+
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary.opacity(0.6))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                                .animation(.easeInOut(duration: 0.18), value: expanded)
                         }
                     }
-                    BatteryBar(level: battery).frame(height: 1)
+
+                    BatteryBar(level: battery, state: state)
                 }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05) : Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.025))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04), lineWidth: 0.5)
+            )
             .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
             .onTapGesture {
                 withAnimation(popupExpandAnimation) { expanded.toggle() }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(name), \(battery)%, \(chargeTooltip)")
 
             if expanded {
                 NotificationThresholdRow(device: device)
                     .padding(.leading, 38)
-                    .padding(.top, -2)
+                    .padding(.trailing, 10)
                     .transition(.opacity)
             }
         }
     }
 
-    private var chargeIcon: String? {
-        if !chargingKnown { return nil }
-        switch state {
-        case .charging:     return "bolt.fill"
-        case .plugged:      return "powerplug.fill"
-        case .paused:       return "pause.fill"
-        case .discharging:  return nil
+    @ViewBuilder
+    private var statusBadge: some View {
+        HStack(spacing: 4) {
+            if chargingKnown && state == .charging {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(EyeFriendlyColors.charging)
+            } else if chargingKnown && state == .paused {
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(EyeFriendlyColors.paused)
+            } else if chargingKnown && state == .plugged {
+                Image(systemName: "powerplug.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.secondary)
+            }
+
+            Text("\(battery)%")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundColor(levelTextColor)
         }
     }
 
+    private var levelTextColor: Color {
+        if isLowBattery {
+            return EyeFriendlyColors.red
+        } else {
+            return .primary
+        }
+    }
+
+    private var iconBackgroundColor: Color {
+        switch device {
+        case .mac:
+            return EyeFriendlyColors.mac
+        case .phone, .pad:
+            return EyeFriendlyColors.phone
+        case .watch:
+            return EyeFriendlyColors.watch
+        case .airPods:
+            return EyeFriendlyColors.airPods
+        default:
+            return EyeFriendlyColors.accessory
+        }
+    }
+
+    private var iconForegroundColor: Color {
+        switch device {
+        case .mac:
+            return .primary.opacity(0.85)
+        case .phone, .pad:
+            return EyeFriendlyColors.phoneFg
+        case .watch:
+            return EyeFriendlyColors.watchFg
+        case .airPods:
+            return EyeFriendlyColors.airPodsFg
+        default:
+            return EyeFriendlyColors.accessoryFg
+        }
+    }
+
+    private var chargeTooltip: String {
+        switch state {
+        case .charging:    return L10n.tr("status.charging")
+        case .plugged:     return L10n.tr("status.plugged")
+        case .paused:      return L10n.tr("status.paused")
+        case .discharging: return L10n.tr("status.battery_status")
+        }
+    }
 }
 
 // MARK: - Battery bar
 
 struct BatteryBar: View {
     let level: Int
+    var state: ChargeState = .discharging
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Capsule()
-            .fill(Color.secondary.opacity(0.2))
-            .overlay(alignment: .leading) {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(barColor)
-                        .frame(width: max(6, geo.size.width * CGFloat(level) / 100))
-                }
+        GeometryReader { geo in
+            let w = geo.size.width
+            let fillW = max(4, w * CGFloat(min(max(level, 0), 100)) / 100)
+
+            ZStack(alignment: .leading) {
+                // Background Track
+                Capsule()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.09 : 0.06))
+
+                // Progress Fill with eye-friendly smooth gradient
+                Capsule()
+                    .fill(barGradient)
+                    .frame(width: fillW)
             }
+        }
+        .frame(height: 4)
     }
 
-    private var barColor: Color {
-        let color = batteryColor(level)
-        return level > 40 && colorScheme == .dark ? color.opacity(0.65) : color
+    private var barGradient: LinearGradient {
+        LinearGradient(
+            colors: gradientColors,
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    private var gradientColors: [Color] {
+        switch state {
+        case .charging:
+            return [EyeFriendlyColors.charging, EyeFriendlyColors.chargingSoft]
+        case .paused:
+            return [EyeFriendlyColors.paused, EyeFriendlyColors.pausedSoft]
+        case .plugged:
+            return [EyeFriendlyColors.paused, EyeFriendlyColors.charging]
+        case .discharging:
+            if level <= 15 {
+                return [EyeFriendlyColors.red, EyeFriendlyColors.redSoft]
+            } else if level <= 35 {
+                return [EyeFriendlyColors.amber, EyeFriendlyColors.amberSoft]
+            } else {
+                return [EyeFriendlyColors.charging, EyeFriendlyColors.chargingSoft]
+            }
+        }
     }
 }
 
@@ -398,127 +629,281 @@ struct BatteryBar: View {
 struct AirPodsRow: View {
     let name: String
     let battery: AirPodsBattery
+    var isConnected: Bool = true
 
     @State private var expanded = false
-
-    var body: some View {
-        VStack(spacing: 18) {
-            if let barLevel = podsBarLevel {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Image(systemName: isPro ? "airpodspro" : "airpods")
-                            .font(.system(size: 17, weight: .regular))
-                            .foregroundColor(.primary)
-                            .frame(width: 26, height: 20, alignment: .center)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(name).font(.system(size: 17, weight: .regular))
-                                Spacer()
-                                HStack(spacing: 6) {
-                                    Image(systemName: "bolt.fill")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .opacity(battery.leftCharging || battery.rightCharging ? 1 : 0)
-                                    Text(podsLevelText).font(.system(size: 17, weight: .regular))
-                                }
-                            }
-                            BatteryBar(level: barLevel).frame(height: 1)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(popupExpandAnimation) { expanded.toggle() }
-                    }
-
-                    if expanded {
-                        NotificationThresholdRow(device: .airPods)
-                            .padding(.leading, 38)
-                            .padding(.top, -2)
-                            .transition(.opacity)
-                    }
-                }
-            }
-
-            if let caseLevel = battery.case {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Image(systemName: isPro ? "airpodspro.chargingcase.wireless" : "airpods.chargingcase")
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundColor(.primary)
-                        .frame(width: 26, height: 20, alignment: .center)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("\(name) Case").font(.system(size: 17, weight: .regular))
-                            Spacer()
-                            HStack(spacing: 6) {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .opacity(battery.caseCharging ? 1 : 0)
-                                Text("\(caseLevel)%").font(.system(size: 17, weight: .regular))
-                            }
-                        }
-                        BatteryBar(level: caseLevel).frame(height: 1)
-                    }
-                }
-            }
-        }
-    }
+    @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private var isPro: Bool { name.lowercased().contains("pro") }
+
+    private var isCharging: Bool {
+        battery.leftCharging || battery.rightCharging
+    }
+
+    private var isLowBattery: Bool {
+        if let lvl = podsBarLevel, lvl <= 20, !isCharging {
+            return true
+        }
+        return false
+    }
 
     private var podsBarLevel: Int? {
         [battery.left, battery.right].compactMap { $0 }.min()
     }
 
-    private var podsLevelText: String {
-        switch (battery.left, battery.right) {
-        case (let l?, let r?) where l != r: return "L\(l)%  R\(r)%"
-        case (let l?, _):                   return "\(l)%"
-        case (_, let r?):                   return "\(r)%"
-        default:                            return ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Main AirPods Card (Earbuds)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center, spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(EyeFriendlyColors.airPods)
+                            .frame(width: 28, height: 28)
+
+                        Image(systemName: isPro ? "airpodspro" : "airpods")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(EyeFriendlyColors.airPodsFg)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .center) {
+                            Text(name)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.primary)
+
+                            if !isConnected {
+                                Text(isCharging ? L10n.tr("status.in_case") : L10n.tr("status.nearby"))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .clipShape(Capsule())
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            HStack(spacing: 6) {
+                                podsBadge
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.secondary.opacity(0.6))
+                                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                                    .animation(.easeInOut(duration: 0.18), value: expanded)
+                            }
+                        }
+
+                        if let barLevel = podsBarLevel {
+                            BatteryBar(level: barLevel, state: isCharging ? .charging : .discharging)
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isHovered ? Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05) : Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.025))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04), lineWidth: 0.5)
+                )
+                .contentShape(Rectangle())
+                .onHover { isHovered = $0 }
+                .onTapGesture {
+                    withAnimation(popupExpandAnimation) { expanded.toggle() }
+                }
+                .accessibilityElement(children: .combine)
+
+                if expanded {
+                    NotificationThresholdRow(device: .airPods)
+                        .padding(.leading, 38)
+                        .padding(.trailing, 10)
+                        .transition(.opacity)
+                }
+            }
+
+            // AirPods Case Row
+            if let caseLevel = battery.case {
+                HStack(alignment: .center, spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.secondary.opacity(0.08))
+                            .frame(width: 28, height: 28)
+
+                        Image(systemName: isPro ? "airpodspro.chargingcase.wireless" : "airpods.chargingcase")
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundColor(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .center) {
+                            Text(L10n.tr("status.case"))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+
+                            Spacer()
+
+                            HStack(spacing: 4) {
+                                if battery.caseCharging {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(EyeFriendlyColors.charging)
+                                }
+                                Text("\(caseLevel)%")
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        BatteryBar(level: caseLevel, state: battery.caseCharging ? .charging : .discharging)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.03 : 0.015))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03), lineWidth: 0.5)
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var podsBadge: some View {
+        HStack(spacing: 5) {
+            if isCharging {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(EyeFriendlyColors.charging)
+            }
+
+            switch (battery.left, battery.right) {
+            case (let l?, let r?) where l != r:
+                HStack(spacing: 4) {
+                    Text("L \(l)%")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(l <= 20 && !battery.leftCharging ? EyeFriendlyColors.red : .primary)
+                    Text("·")
+                        .foregroundColor(.secondary)
+                    Text("R \(r)%")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(r <= 20 && !battery.rightCharging ? EyeFriendlyColors.red : .primary)
+                }
+            case (let l?, _):
+                Text("\(l)%")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(isLowBattery ? EyeFriendlyColors.red : .primary)
+            case (_, let r?):
+                Text("\(r)%")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(isLowBattery ? EyeFriendlyColors.red : .primary)
+            default:
+                EmptyView()
+            }
         }
     }
 }
 
-// MARK: - Accessory row (keyboard / mouse / trackpad)
+// MARK: - Accessory row (keyboard / mouse / trackpad / headphones)
 
 struct AccessoryRow: View {
     let accessory: AccessoryBattery
 
     @State private var expanded = false
+    @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isLowBattery: Bool {
+        accessory.level <= 20 && (!accessory.chargingKnown || !accessory.charging)
+    }
+
+    private var relativeTime: String? {
+        formatRelativeTime(since: accessory.updatedAt)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Image(systemName: accessory.icon)
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundColor(.primary)
-                    .frame(width: 26, height: 20, alignment: .center)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(EyeFriendlyColors.accessory)
+                        .frame(width: 28, height: 28)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(accessory.name).font(.system(size: 17, weight: .regular))
+                    Image(systemName: accessory.icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(EyeFriendlyColors.accessoryFg)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .center) {
+                        Text(accessory.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+
                         Spacer()
-                        HStack(spacing: 6) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 12, weight: .medium))
-                                .opacity(accessory.chargingKnown && accessory.charging ? 1 : 0)
-                                .help("Charging")
-                            Text("\(accessory.level)%").font(.system(size: 17, weight: .regular))
+
+                        HStack(spacing: 5) {
+                            if let relative = relativeTime {
+                                Text(relative)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary.opacity(0.8))
+                                    .padding(.trailing, 2)
+                            }
+
+                            if accessory.chargingKnown && accessory.charging {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(EyeFriendlyColors.charging)
+                            }
+
+                            Text("\(accessory.level)%")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundColor(isLowBattery ? EyeFriendlyColors.red : .primary)
+
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary.opacity(0.6))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                                .animation(.easeInOut(duration: 0.18), value: expanded)
                         }
                     }
-                    BatteryBar(level: accessory.level).frame(height: 1)
+
+                    BatteryBar(
+                        level: accessory.level,
+                        state: (accessory.chargingKnown && accessory.charging) ? .charging : .discharging
+                    )
                 }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05) : Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.025))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04), lineWidth: 0.5)
+            )
             .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
             .onTapGesture {
                 withAnimation(popupExpandAnimation) { expanded.toggle() }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(accessory.name), \(accessory.level)%")
 
             if expanded {
                 NotificationThresholdRow(device: accessory.batteryDevice, accessory: accessory)
                     .padding(.leading, 38)
-                    .padding(.top, -2)
+                    .padding(.trailing, 10)
                     .transition(.opacity)
             }
         }
@@ -532,54 +917,194 @@ struct NotificationThresholdRow: View {
     var accessory: AccessoryBattery? = nil
     @ObservedObject private var settings = AppSettings.shared
     @EnvironmentObject private var monitor: DeviceBatteryMonitor
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var showingAddBelow = false
+    @State private var showingAddAbove = false
+    @State private var quickBelowValue: Double = 15
+    @State private var quickAboveValue: Double = 85
 
     private var updatedAt: Date? {
-        // Never substitute another mouse/keyboard's timestamp for this device,
-        // including when its user-assigned Bluetooth name changes its category.
         if let accessory { return accessory.updatedAt }
         return monitor.syncTimes[device.rawValue]
     }
 
+    private var rules: DeviceNotificationRules {
+        settings.rules(for: device)
+    }
+
+    // Active thresholds configured by the user; fallback to recommended presets when empty
+    private var belowOptions: [Int] {
+        if rules.below.isEmpty {
+            return [10, 20]
+        }
+        return rules.below
+    }
+
+    private var aboveOptions: [Int] {
+        if rules.above.isEmpty {
+            return [80, 100]
+        }
+        return rules.above
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Notifications")
-                    .font(.system(size: 12))
+        VStack(alignment: .leading, spacing: 8) {
+            // Header with status & settings button
+            HStack(alignment: .center) {
+                Text(L10n.tr("notification.notifications"))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
+
                 Spacer()
+
                 if device == .mac, let mac = monitor.macBattery {
                     if let mins = mac.minutesToFull {
-                        Text("\(formatMinutes(mins)) to full")
-                            .font(.system(size: 12))
+                        Text(L10n.tr("status.to_full", formatMinutes(mins)))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     } else if let mins = mac.minutesToEmpty {
-                        Text("\(formatMinutes(mins)) remaining")
-                            .font(.system(size: 12))
+                        Text(L10n.tr("status.remaining", formatMinutes(mins)))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     } else if mac.state == .charging || mac.state == .discharging {
-                        Text("Calculating…")
-                            .font(.system(size: 12))
+                        Text(L10n.tr("status.calculating"))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                 } else if accessory != nil || updatedAt != nil {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(BatteryUpdateAge.text(since: updatedAt, at: context.date))
-                            .font(.system(size: 12))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                 }
+
+                Button {
+                    SettingsWindowController.shared.show(selectedDevice: device)
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(L10n.tr("menu.settings"))
             }
+
+            // Below thresholds (Discharge)
             HStack(spacing: 6) {
-                ForEach((device == .airPods || device == .headphones) ? [20] : [20, 80, 100], id: \.self) { threshold in
-                    ThresholdToggleButton(
-                        label: threshold == 20 ? "↓20%" : threshold == 80 ? "↑80%" : "100%",
-                        enabled: settings.isThresholdEnabled(device: device, threshold: threshold)
-                    ) {
-                        settings.toggleThreshold(device: device, threshold: threshold)
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(L10n.tr("rules.below_label"))
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(EyeFriendlyColors.amber)
+                .frame(width: 44, alignment: .leading)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(belowOptions, id: \.self) { val in
+                            ModernChip(
+                                label: "\(val)%",
+                                isEnabled: rules.below.contains(val),
+                                accentColor: EyeFriendlyColors.amber
+                            ) {
+                                settings.toggleThreshold(device: device, type: .below, threshold: val)
+                            }
+                        }
+
+                        Button {
+                            showingAddBelow = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 22, height: 20)
+                                .foregroundColor(.secondary)
+                                .background(Color.secondary.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showingAddBelow) {
+                            QuickAddPopover(
+                                title: L10n.tr("rules.section_below"),
+                                value: $quickBelowValue,
+                                range: 5...50,
+                                step: 5,
+                                color: EyeFriendlyColors.amber,
+                                onAdd: {
+                                    settings.addThreshold(device: device, type: .below, threshold: Int(quickBelowValue))
+                                    showingAddBelow = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Above thresholds (Charging)
+            if device != .airPods && device != .headphones {
+                HStack(spacing: 6) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(L10n.tr("rules.above_label"))
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(EyeFriendlyColors.charging)
+                    .frame(width: 44, alignment: .leading)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(aboveOptions, id: \.self) { val in
+                                ModernChip(
+                                    label: "\(val)%",
+                                    isEnabled: rules.above.contains(val),
+                                    accentColor: EyeFriendlyColors.charging
+                                ) {
+                                    settings.toggleThreshold(device: device, type: .above, threshold: val)
+                                }
+                            }
+
+                            Button {
+                                showingAddAbove = true
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .frame(width: 22, height: 20)
+                                    .foregroundColor(.secondary)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                            }
+                            .buttonStyle(.plain)
+                            .popover(isPresented: $showingAddAbove) {
+                                QuickAddPopover(
+                                    title: L10n.tr("rules.section_above"),
+                                    value: $quickAboveValue,
+                                    range: 50...100,
+                                    step: 5,
+                                    color: EyeFriendlyColors.charging,
+                                    onAdd: {
+                                        settings.addThreshold(device: device, type: .above, threshold: Int(quickAboveValue))
+                                        showingAddAbove = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(colorScheme == .dark ? 0.12 : 0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
         .modifier(IsolatedGeometry())
     }
 }
@@ -594,71 +1119,75 @@ private struct IsolatedGeometry: ViewModifier {
     }
 }
 
-// MARK: - Threshold toggle button
+// MARK: - Modern Chip
 
-struct ThresholdToggleButton: View {
+private struct ModernChip: View {
     let label: String
-    let enabled: Bool
+    let isEnabled: Bool
+    let accentColor: Color
     let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 15))
-                .foregroundColor(.primary)
-                .frame(width: 56, height: 22)
-        }
-        .buttonStyle(ThresholdButtonStyle(enabled: enabled))
-    }
-}
-
-struct ThresholdButtonStyle: ButtonStyle {
-    let enabled: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        ThresholdButtonBody(configuration: configuration, enabled: enabled)
-    }
-}
-
-private struct ThresholdButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    let enabled: Bool
-    @Environment(\.colorScheme) var colorScheme
-
-    var body: some View {
-        if #available(macOS 26, *) {
-            if enabled {
-                configuration.label
-                    .scaleEffect(configuration.isPressed ? 0.94 : 1)
-                    .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-                    .background {
-                        Color.clear
-                            .glassEffect(
-                                .regular.interactive(),
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            )
-                    }
-            } else {
-                configuration.label
-                    .opacity(0.4)
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(0.25), lineWidth: 0.5))
-            }
-        } else {
-            configuration.label
-                .background(enabled && colorScheme == .light ? Color.white : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .font(.system(size: 12, weight: isEnabled ? .semibold : .regular))
+                .foregroundColor(isEnabled ? (colorScheme == .dark ? .white : accentColor) : .secondary)
+                .frame(minWidth: 36)
+                .frame(height: 20)
+                .padding(.horizontal, 4)
+                .background(
+                    isEnabled
+                        ? accentColor.opacity(colorScheme == .dark ? 0.35 : 0.18)
+                        : Color.clear
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .stroke(
-                            enabled && colorScheme == .dark
-                                ? Color.white
-                                : enabled ? Color.primary : Color.primary.opacity(0.2),
-                            lineWidth: enabled && colorScheme == .dark ? 0.75 : 0.5
+                            isEnabled
+                                ? accentColor.opacity(0.6)
+                                : Color.primary.opacity(0.15),
+                            lineWidth: isEnabled ? 1 : 0.5
                         )
                 )
-                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Quick Add Popover
+
+private struct QuickAddPopover: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let color: Color
+    let onAdd: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+
+            Text("\(Int(value))%")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+
+            Slider(value: $value, in: range, step: step)
+                .frame(width: 140)
+
+            HStack {
+                Button(L10n.tr("rules.add")) {
+                    onAdd()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .frame(width: 170)
     }
 }
 
@@ -678,12 +1207,58 @@ private extension Color {
                   green: Double((hex >>  8) & 0xFF) / 255,
                   blue:  Double( hex        & 0xFF) / 255)
     }
+
+    init(light: UInt32, dark: UInt32) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let hex = isDark ? dark : light
+            return NSColor(
+                red:   CGFloat((hex >> 16) & 0xFF) / 255.0,
+                green: CGFloat((hex >>  8) & 0xFF) / 255.0,
+                blue:  CGFloat( hex        & 0xFF) / 255.0,
+                alpha: 1.0
+            )
+        })
+    }
+}
+
+// MARK: - Eye-Friendly Semantic Color Palette
+
+enum EyeFriendlyColors {
+    // Gentle natural Apple emerald green (Charging & Good battery)
+    // Light: #248A3D (gentle iOS green), Dark: #30D158 (calibrated luminance)
+    static let charging = Color(light: 0x248A3D, dark: 0x30D158)
+    static let chargingSoft = Color(light: 0x2DA44E, dark: 0x34C759)
+
+    // Gentle Apple slate blue (Paused / 80% optimized charging limit)
+    static let paused = Color(light: 0x0071E3, dark: 0x2997FF)
+    static let pausedSoft = Color(light: 0x147CE5, dark: 0x47A1F5)
+
+    // Gentle warm amber (16% - 35% warning)
+    static let amber = Color(light: 0xD97706, dark: 0xF59E0B)
+    static let amberSoft = Color(light: 0xEA580C, dark: 0xFBBF24)
+
+    // Gentle coral red (<= 15% low battery)
+    static let red = Color(light: 0xDC2626, dark: 0xEF4444)
+    static let redSoft = Color(light: 0xE11D48, dark: 0xF87171)
+
+    // Device category icon colors
+    static let mac = Color.secondary.opacity(0.12)
+    static let phone = Color(light: 0x0071E3, dark: 0x2997FF).opacity(0.12)
+    static let watch = Color(light: 0xD97706, dark: 0xF59E0B).opacity(0.12)
+    static let airPods = Color(light: 0x248A3D, dark: 0x30D158).opacity(0.12)
+    static let accessory = Color(light: 0x7C3AED, dark: 0xA855F7).opacity(0.12)
+
+    static let phoneFg = Color(light: 0x0071E3, dark: 0x2997FF)
+    static let watchFg = Color(light: 0xD97706, dark: 0xF59E0B)
+    static let airPodsFg = Color(light: 0x248A3D, dark: 0x30D158)
+    static let accessoryFg = Color(light: 0x7C3AED, dark: 0xA855F7)
 }
 
 private func batteryColor(_ level: Int) -> Color {
     switch level {
-    case 0...20: return .red
-    case 21...40: return .orange
-    default:      return Color(hex: 0x57A269)
+    case 0...15:  return EyeFriendlyColors.red
+    case 16...35: return EyeFriendlyColors.amber
+    default:      return EyeFriendlyColors.charging
     }
 }

@@ -1,0 +1,72 @@
+/* Device Types */
+"device.mac" = "MacBook";
+"device.phone" = "iPhone";
+"device.pad" = "iPad";
+"device.watch" = "Apple Watch";
+"device.airpods" = "AirPods";
+"device.keyboard" = "Keyboard";
+"device.mouse" = "Mouse";
+"device.trackpad" = "Trackpad";
+"device.headphones" = "Headphones";
+
+/* Menu and General */
+"menu.barttery" = "Barttery";
+"menu.refresh" = "Refresh";
+"menu.refreshing" = "Refreshing…";
+"menu.launch_at_login" = "Launch at Login";
+"menu.update_available" = "Update Available…";
+"menu.quit" = "Quit";
+"menu.settings" = "Settings…";
+"menu.cycles" = "%@: %d cycles";
+
+/* Empty State */
+"empty.title" = "No Battery Devices";
+"empty.message" = "Make sure Bluetooth is turned on, or connect your iPhone/iPad via USB and trust this Mac.";
+
+/* Status */
+"status.to_full" = "%@ to full";
+"status.remaining" = "%@ remaining";
+"status.calculating" = "Calculating…";
+"status.charging" = "Charging";
+"status.plugged" = "Connected to power";
+"status.paused" = "Charging paused (Battery Health)";
+"status.battery_status" = "Battery status";
+"status.ago" = "%@ ago";
+"status.in_case" = "In Case";
+"status.nearby" = "Nearby";
+"status.disconnected" = "Disconnected";
+"status.case" = "Case";
+"status.paused_badge" = "Paused";
+"status.charging_badge" = "Charging";
+
+/* Notifications */
+"notification.notifications" = "Notifications";
+"notification.title.below" = "Low Battery";
+"notification.body.below" = "%@ is down to %d%% — time to charge";
+"notification.title.above" = "Charging Alert";
+"notification.body.above" = "%@ charged to %d%%";
+"notification.body.fully_charged" = "%@ is fully charged";
+
+/* Notification Rules UI */
+"rules.below_label" = "Below";
+"rules.above_label" = "Above";
+"rules.section_below" = "Alert when battery drops below:";
+"rules.section_above" = "Alert when charged above:";
+"rules.custom" = "Custom…";
+"rules.add" = "Add";
+"rules.add_rule" = "Add Alert";
+"rules.enter_percentage" = "Percentage (1–100)";
+"rules.done" = "Done";
+"rules.cancel" = "Cancel";
+
+/* Settings Window */
+"settings.title" = "Notification Preferences";
+"settings.general" = "General";
+"settings.show_percentage_menubar" = "Show Battery Percentage in Status Bar";
+"settings.devices" = "Devices";
+"settings.all_devices" = "All Devices (Default)";
+"settings.sound_alert" = "Play alert sound";
+"settings.test_button" = "Send Test Notification";
+"settings.test_sent" = "Test notification sent!";
+"settings.hint_below" = "Get notified when this device's battery is running low.";
+"settings.hint_above" = "Get notified when this device reaches a desired charge level.";

@@ -1,11 +1,83 @@
 import AppKit
 
+private struct IconKey: Hashable {
+    let level: Int
+    let state: ChargeState
+}
+
+private let iconFont: NSFont = sfRounded(size: 13, weight: .bold)
+private var iconCache: [IconKey: NSImage] = [:]
+private let iconCacheLock = NSLock()
+private var cachedPlugIcon: NSImage?
+
+private var symbolCache: [IconKey: NSImage] = [:]
+
+func renderSymbolBatteryIcon(level: Int, state: ChargeState) -> NSImage {
+    let key = IconKey(level: level, state: state)
+    iconCacheLock.lock()
+    if let cached = symbolCache[key] {
+        iconCacheLock.unlock()
+        return cached
+    }
+    iconCacheLock.unlock()
+
+    let symbolName: String
+    switch state {
+    case .charging:
+        switch level {
+        case 80...100: symbolName = "battery.100.bolt"
+        case 55...79:  symbolName = "battery.75.bolt"
+        case 30...54:  symbolName = "battery.50.bolt"
+        default:       symbolName = "battery.25.bolt"
+        }
+    case .plugged:
+        symbolName = "powerplug"
+    case .paused:
+        switch level {
+        case 85...100: symbolName = "battery.100"
+        case 60...84:  symbolName = "battery.75"
+        case 35...59:  symbolName = "battery.50"
+        case 15...34:  symbolName = "battery.25"
+        default:       symbolName = "battery.0"
+        }
+    case .discharging:
+        switch level {
+        case 85...100: symbolName = "battery.100"
+        case 60...84:  symbolName = "battery.75"
+        case 35...59:  symbolName = "battery.50"
+        case 15...34:  symbolName = "battery.25"
+        default:       symbolName = "battery.0"
+        }
+    }
+
+    let image: NSImage
+    if let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Battery") {
+        symbol.isTemplate = true
+        image = symbol
+    } else {
+        image = renderPlugIcon()
+    }
+
+    iconCacheLock.lock()
+    symbolCache[key] = image
+    iconCacheLock.unlock()
+
+    return image
+}
+
 func renderBatteryIcon(level: Int, state: ChargeState) -> NSImage {
-    let font   = sfRounded(size: 13, weight: .bold)
+    let key = IconKey(level: level, state: state)
+    iconCacheLock.lock()
+    if let cached = iconCache[key] {
+        iconCacheLock.unlock()
+        return cached
+    }
+    iconCacheLock.unlock()
+
     let text   = "\(level)"
     let str    = NSAttributedString(string: text,
-                                    attributes: [.font: font, .foregroundColor: NSColor.black,
-                                                 .kern: -font.pointSize * 0.03])
+                                    attributes: [.font: iconFont, .foregroundColor: NSColor.black,
+                                                 .kern: -iconFont.pointSize * 0.03])
     let tSize  = str.size()
 
     let hasSymbol   = state != .discharging
@@ -65,7 +137,7 @@ func renderBatteryIcon(level: Int, state: ChargeState) -> NSImage {
     NSGraphicsContext.current = nsCtx
 
     let startX   = (bodyW - contentW) / 2
-    let baseline = (bodyH - font.capHeight) / 2 - 2.75
+    let baseline = (bodyH - iconFont.capHeight) / 2 - 2.75
     str.draw(at: CGPoint(x: startX, y: baseline))
 
     if hasSymbol {
@@ -80,6 +152,11 @@ func renderBatteryIcon(level: Int, state: ChargeState) -> NSImage {
     guard let cgImage = ctx.makeImage() else { return NSImage() }
     let image = NSImage(cgImage: cgImage, size: totalSize)
     image.isTemplate = true
+
+    iconCacheLock.lock()
+    iconCache[key] = image
+    iconCacheLock.unlock()
+
     return image
 }
 
@@ -131,6 +208,7 @@ private func drawPause(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat) {
 }
 
 func renderPlugIcon() -> NSImage {
+    if let cached = cachedPlugIcon { return cached }
     let size = CGSize(width: 18, height: 14)
     let image = NSImage(size: size, flipped: false) { rect in
         guard let symbol = NSImage(systemSymbolName: "powerplug", accessibilityDescription: nil) else { return false }
@@ -138,6 +216,7 @@ func renderPlugIcon() -> NSImage {
         return true
     }
     image.isTemplate = true
+    cachedPlugIcon = image
     return image
 }
 

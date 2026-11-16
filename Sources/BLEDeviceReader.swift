@@ -42,9 +42,21 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     func refresh() {
         guard central?.state == .poweredOn else { return }
+        pruneStalePeripherals()
         connectExisting()
         for (id, ch) in battChars {
             peripherals[id]?.readValue(for: ch)
+        }
+    }
+
+    private func pruneStalePeripherals() {
+        let now = Date()
+        let staleTimeout: TimeInterval = 7200
+        for (id, date) in measurementDates {
+            if now.timeIntervalSince(date) > staleTimeout {
+                if let p = peripherals[id], p.state == .connected { continue }
+                remove(id)
+            }
         }
     }
 

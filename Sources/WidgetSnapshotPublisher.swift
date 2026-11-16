@@ -25,7 +25,7 @@ final class WidgetSnapshotPublisher {
 
     private func publish(_ monitor: DeviceBatteryMonitor) {
         // The plain SwiftPM/DMG build deliberately has no App Group entitlement.
-        guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool == true else { return }
+        guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool != false else { return }
         do {
             try WidgetSnapshotStore.write(monitor.widgetSnapshot())
             if !hasPublishedSnapshot {
@@ -36,13 +36,17 @@ final class WidgetSnapshotPublisher {
                 requestReload()
             }
         } catch {
-            Self.logger.error("Cannot save widget snapshot: \(error.localizedDescription, privacy: .public)")
+            let path = WidgetSnapshotStore.fileURL?.path ?? "nil"
+            Self.logger.error("Cannot save widget snapshot: \(error.localizedDescription, privacy: .public) [fopenErr=\(WidgetSnapshotStore.lastFopenErrno), path=\(path, privacy: .public)]")
         }
     }
 
     static func reloadAllWidgets() {
-        guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool == true else { return }
+        guard Bundle.main.object(forInfoDictionaryKey: "BartteryWidgetsEnabled") as? Bool != false else { return }
         WidgetCenter.shared.reloadAllTimelines()
+        for layout in WidgetBatteryLayout.allCases {
+            WidgetCenter.shared.reloadTimelines(ofKind: layout.widgetKind)
+        }
     }
 
     private func requestReload() {
@@ -53,9 +57,7 @@ final class WidgetSnapshotPublisher {
             guard let self else { return }
             self.pendingReload = nil
             self.lastReload = Date()
-            for layout in WidgetBatteryLayout.allCases {
-                WidgetCenter.shared.reloadTimelines(ofKind: layout.widgetKind)
-            }
+            Self.reloadAllWidgets()
         }
         pendingReload = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -75,21 +77,21 @@ extension DeviceBatteryMonitor {
         }
 
         if let mac = macBattery {
-            append("mac", macName, "macbook", mac.level, mac.state == .charging,
+            append("mac", displayMacName, "macbook", mac.level, mac.state == .charging,
                    paused: mac.state == .paused,
-                   updatedAt: macBatteryUpdatedAt ?? .distantPast)
+                   updatedAt: macBatteryUpdatedAt ?? date)
         }
-        append("phone", phoneName, "iphone", phoneBattery, phoneCharging,
-               updatedAt: syncTimes[BatteryDevice.phone.rawValue] ?? .distantPast)
+        append("phone", displayPhoneName, "iphone", phoneBattery, phoneCharging,
+               updatedAt: syncTimes[BatteryDevice.phone.rawValue] ?? date)
         append("pad", padName, "ipad", padBattery, padCharging,
-               updatedAt: syncTimes[BatteryDevice.pad.rawValue] ?? .distantPast)
+               updatedAt: syncTimes[BatteryDevice.pad.rawValue] ?? date)
         if let pods = airPodsBattery {
             // One ring for the earbuds, using the lower available level.
             let level = [pods.left, pods.right].compactMap { $0 }.min()
-            let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? .distantPast
-            append("airpods", airPodsName, "airpods", level,
+            let updatedAt = syncTimes[BatteryDevice.airPods.rawValue] ?? date
+            append("airpods", displayAirPodsName, "airpods", level,
                    pods.leftCharging || pods.rightCharging, updatedAt: updatedAt)
-            append("airpods.case", "\(airPodsName) Case", "airpods.chargingcase", pods.case,
+            append("airpods.case", "\(displayAirPodsName) Case", "airpods.chargingcase", pods.case,
                    pods.caseCharging, updatedAt: updatedAt)
         }
         if let watch = watchBattery {

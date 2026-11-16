@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import IOBluetooth
+import Combine
 
 class DeviceBatteryMonitor: ObservableObject {
     @Published var macBattery:    MacBattery?  = nil
@@ -17,19 +18,26 @@ class DeviceBatteryMonitor: ObservableObject {
     @Published var syncTimes:     [String: Date] = {
         let ud = UserDefaults.standard
         var times: [String: Date] = [:]
-        for key in ["phone", "pad", "watch"] {
+        for key in ["phone", "pad", "watch", "airPods"] {
+            let maxAge: TimeInterval = (key == "airPods") ? 14400 : 1800
             if let t = ud.object(forKey: "\(key).lastSyncTime") as? Date,
-               Date().timeIntervalSince(t) < 1800 {
+               Date().timeIntervalSince(t) < maxAge {
                 times[key] = t
             }
         }
         return times
     }()
 
-    @Published var airPodsBattery:   AirPodsBattery? = nil
+    @Published var airPodsBattery:   AirPodsBattery? = cachedAirPodsBattery()
     @Published var airPodsConnected: Bool = false
-    @Published var airPodsName:      String = "AirPods"
+    @Published var airPodsName:      String = UserDefaults.standard.string(forKey: "airPods.lastName") ?? "AirPods"
     @Published var accessories:      [AccessoryBattery] = cachedAccessories()
+    @Published var isRefreshing:     Bool = false
+
+    var hasAnyDevices: Bool {
+        macBattery != nil || airPodsBattery != nil || !accessories.isEmpty ||
+        phoneBattery != nil || padBattery != nil || watchBattery != nil
+    }
 
     private var macReader:          MacBatteryReader?
     private var ideviceReader:      IDeviceReader?
@@ -40,6 +48,7 @@ class DeviceBatteryMonitor: ObservableObject {
     private var btHeadphonesReader: BTHeadphonesReader?
     private var refreshTimer:    Timer?
     private var retryTimer:      Timer?
+    private var iconCancellable: AnyCancellable?
 
     // Separate buckets merged into `accessories` for display.
     private var appleAccessories: [AccessoryBattery] = []
@@ -60,9 +69,13 @@ class DeviceBatteryMonitor: ObservableObject {
         setupBLEDevices()
         setupLogitech()
         setupBTHeadphones()
+        iconCancellable = AppSettings.shared.$showPercentageInMenuBar.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.rebuildIcon() }
+        }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        refreshTimer?.tolerance = 15
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
         // for as long as the Mac was asleep. Force an immediate re-poll on wake.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -70,11 +83,22 @@ class DeviceBatteryMonitor: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refresh()
+            guard let self else { return }
+            self.macReader?.readNow()
+            self.pruneStaleSyncTimes()
+            // Stagger peripheral refresh by 5s to allow Bluetooth stack to ready
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.accessoryReader?.readOnce()
+                self?.bleReader?.refresh()
+                self?.logiReader?.refresh()
+                self?.btHeadphonesReader?.readOnce()
+                self?.ideviceReader?.scanNow()
+            }
         }
     }
 
     func refresh() {
+        isRefreshing = true
         macReader?.readNow()
         accessoryReader?.readOnce()
         bleReader?.refresh()
@@ -82,10 +106,15 @@ class DeviceBatteryMonitor: ObservableObject {
         btHeadphonesReader?.readOnce()
         ideviceReader?.scanNow()
         pruneStaleSyncTimes()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.isRefreshing = false
+        }
     }
 
     func onPopupOpen() {
         let openTime = Date()
+        airPodsReader?.refreshPlist()
+        airPodsReader?.startScanning()
         // Restart wedged bartbeat when either phone or Watch data looks stale.
         let phoneAge = syncTimes[BatteryDevice.phone.rawValue].map { openTime.timeIntervalSince($0) }
         let watchAge = syncTimes[BatteryDevice.watch.rawValue].map { openTime.timeIntervalSince($0) }
@@ -95,13 +124,15 @@ class DeviceBatteryMonitor: ObservableObject {
             ideviceReader?.forceReconnect()
         }
         refresh()
-        retryTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if syncTimes.values.contains(where: { $0 > openTime }) {
-                retryTimer?.invalidate()
-                retryTimer = nil
+        var attempts = 0
+        retryTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            attempts += 1
+            if attempts >= 3 || self.syncTimes.values.contains(where: { $0 > openTime }) {
+                t.invalidate()
+                self.retryTimer = nil
             } else {
-                refresh()
+                self.refresh()
             }
         }
     }
@@ -126,6 +157,10 @@ class DeviceBatteryMonitor: ObservableObject {
         if let t = syncTimes[BatteryDevice.watch.rawValue], now.timeIntervalSince(t) > timeout {
             watchBattery = nil
             syncTimes.removeValue(forKey: BatteryDevice.watch.rawValue)
+        }
+        if let t = syncTimes[BatteryDevice.airPods.rawValue], now.timeIntervalSince(t) > 14400 {
+            airPodsBattery = nil
+            syncTimes.removeValue(forKey: BatteryDevice.airPods.rawValue)
         }
     }
 
@@ -209,17 +244,51 @@ class DeviceBatteryMonitor: ObservableObject {
         ideviceReader = reader
     }
 
+    var displayMacName: String {
+        if macName == airPodsName || macName == phoneName {
+            return "\(macName) (Mac)"
+        }
+        return macName
+    }
+
+    var displayPhoneName: String {
+        if phoneName == macName || phoneName == airPodsName {
+            return "\(phoneName) (iPhone)"
+        }
+        return phoneName
+    }
+
+    var displayAirPodsName: String {
+        let lower = airPodsName.lowercased()
+        if !lower.contains("airpod") && !lower.contains("beats") && !lower.contains("耳") {
+            return "\(airPodsName) (AirPods Pro)"
+        }
+        return airPodsName
+    }
+
     private func setupAirPods() {
+        if let cached = cachedAirPodsBattery() {
+            self.airPodsBattery = cached
+            if let name = UserDefaults.standard.string(forKey: "airPods.lastName") {
+                self.airPodsName = name
+            }
+        }
         let reader = AirPodsReader()
         reader.onConnect = { [weak self] name in
             self?.airPodsName = name
+            UserDefaults.standard.set(name, forKey: "airPods.lastName")
         }
         reader.onUpdate = { [weak self] battery in
-            self?.airPodsBattery = battery
-            self?.airPodsConnected = reader.isConnected
-            if let name = reader.deviceName { self?.airPodsName = name }
-            if battery != nil {
-                self?.syncTimes[BatteryDevice.airPods.rawValue] = Date()
+            guard let self else { return }
+            if let battery {
+                self.airPodsBattery = battery
+                self.airPodsConnected = reader.isConnected
+                self.syncTimes[BatteryDevice.airPods.rawValue] = Date()
+                saveCachedAirPodsBattery(battery)
+            }
+            if let name = reader.deviceName {
+                self.airPodsName = name
+                UserDefaults.standard.set(name, forKey: "airPods.lastName")
             }
             if let battery,
                let minLevel = [battery.left, battery.right].compactMap({ $0 }).min() {
@@ -393,7 +462,11 @@ class DeviceBatteryMonitor: ObservableObject {
             menuBarIcon = renderPlugIcon()
             return
         }
-        menuBarIcon = renderBatteryIcon(level: mac.level, state: mac.state)
+        if AppSettings.shared.showPercentageInMenuBar {
+            menuBarIcon = renderBatteryIcon(level: mac.level, state: mac.state)
+        } else {
+            menuBarIcon = renderSymbolBatteryIcon(level: mac.level, state: mac.state)
+        }
     }
 }
 
@@ -417,4 +490,33 @@ private func cachedAccessories() -> [AccessoryBattery] {
         else { return nil }
         return AccessoryBattery(name: name, level: level, charging: false, updatedAt: t, chargingKnown: false)
     }
+}
+
+private func saveCachedAirPodsBattery(_ b: AirPodsBattery) {
+    let ud = UserDefaults.standard
+    ud.set(b.left, forKey: "airPods.lastLeft")
+    ud.set(b.right, forKey: "airPods.lastRight")
+    ud.set(b.case, forKey: "airPods.lastCase")
+    ud.set(b.leftCharging, forKey: "airPods.lastLeftCharging")
+    ud.set(b.rightCharging, forKey: "airPods.lastRightCharging")
+    ud.set(b.caseCharging, forKey: "airPods.lastCaseCharging")
+    ud.set(Date(), forKey: "airPods.lastSyncTime")
+}
+
+private func cachedAirPodsBattery() -> AirPodsBattery? {
+    let ud = UserDefaults.standard
+    guard let t = ud.object(forKey: "airPods.lastSyncTime") as? Date,
+          Date().timeIntervalSince(t) < 14400 else { return nil }
+    let left = ud.object(forKey: "airPods.lastLeft") as? Int
+    let right = ud.object(forKey: "airPods.lastRight") as? Int
+    let cas = ud.object(forKey: "airPods.lastCase") as? Int
+    guard left != nil || right != nil || cas != nil else { return nil }
+    return AirPodsBattery(
+        left: left,
+        right: right,
+        case: cas,
+        leftCharging: ud.bool(forKey: "airPods.lastLeftCharging"),
+        rightCharging: ud.bool(forKey: "airPods.lastRightCharging"),
+        caseCharging: ud.bool(forKey: "airPods.lastCaseCharging")
+    )
 }

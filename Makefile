@@ -4,9 +4,12 @@ BUNDLED_LIB_DIR = Sources/Resources/lib
 BUNDLE     = Barttery.app
 CONTENTS   = $(BUNDLE)/Contents
 BIN_DIR    = .build/release
-SIGN      ?= Apple Development: yura@yura.me (69Z678PHDM)
-SIGN_FLAGS ?=
+SIGN        ?= NativeToolbox Dev
+KEYCHAIN    ?= $(shell [ -f "/Users/$$(id -un)/Library/Keychains/login.keychain-db" ] && echo "/Users/$$(id -un)/Library/Keychains/login.keychain-db" || echo "$$HOME/Library/Keychains/login.keychain-db")
+SIGN_FLAGS  ?= $(shell [ -f "$(KEYCHAIN)" ] && echo "--keychain $(KEYCHAIN)")
 NOTARY_PROFILE ?=
+MODULE_CACHE ?= /tmp/clang-module-cache
+WIDGET_APPEX = $(CONTENTS)/PlugIns/BartteryWidget.appex
 
 .PHONY: all build run install clean dmg release test-watchlog widgets widgets-check widget-preview
 
@@ -15,18 +18,29 @@ all: build
 build:
 	rm -rf $(BUNDLE)
 	swift build -c release --arch arm64
-	@mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources
+	@mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources $(WIDGET_APPEX)/Contents/MacOS $(WIDGET_APPEX)/Contents/Resources
 	@cp $(BIN_DIR)/$(APP) $(CONTENTS)/MacOS/$(APP)
 	@chmod +x $(CONTENTS)/MacOS/$(APP)
 	@cp Info.plist $(CONTENTS)/
 	@cp AppIcon.icns $(CONTENTS)/Resources/
 	@cp Sources/Resources/idevice_id Sources/Resources/ideviceinfo Sources/Resources/comptest Sources/Resources/bartbeat Sources/Resources/mobilebeat Sources/Resources/wifiwatch $(CONTENTS)/Resources/
 	@cp Sources/Resources/lib/*.dylib $(CONTENTS)/Resources/
+	@cp -R Sources/Resources/*.lproj $(CONTENTS)/Resources/
 	@chmod +x $(CONTENTS)/Resources/idevice_id $(CONTENTS)/Resources/ideviceinfo $(CONTENTS)/Resources/comptest $(CONTENTS)/Resources/bartbeat $(CONTENTS)/Resources/mobilebeat $(CONTENTS)/Resources/wifiwatch
 	@python3 scripts/prepare-device-helpers.py "$(CONTENTS)/Resources"
-	@set -e; for f in $(CONTENTS)/Resources/*.dylib $(CONTENTS)/Resources/idevice_id $(CONTENTS)/Resources/ideviceinfo $(CONTENTS)/Resources/comptest $(CONTENTS)/Resources/bartbeat $(CONTENTS)/Resources/mobilebeat $(CONTENTS)/Resources/wifiwatch; do \
+	@mkdir -p $(MODULE_CACHE)
+	@xcrun swiftc -module-cache-path $(MODULE_CACHE) -parse-as-library -application-extension -target arm64-apple-macos14.0 -O \
+		-Xlinker -e -Xlinker _NSExtensionMain \
+		Sources/WidgetSnapshot.swift Widgets/BartteryWidget.swift \
+		-o $(WIDGET_APPEX)/Contents/MacOS/BartteryWidget
+	@chmod +x $(WIDGET_APPEX)/Contents/MacOS/BartteryWidget
+	@python3 -c 'import plistlib; p=plistlib.load(open("Widgets/Widget-Info.plist", "rb")); p["CFBundleExecutable"]="BartteryWidget"; p["CFBundleIdentifier"]="me.yura.barttery.widget"; p["CFBundleName"]="BartteryWidget"; p["CFBundleDisplayName"]="Barttery"; p["CFBundleDevelopmentRegion"]="en"; p["CFBundleShortVersionString"]="1.1.6"; p["CFBundleVersion"]="1"; p["CFBundleSupportedPlatforms"]=["MacOSX"]; p["LSMinimumSystemVersion"]="14.0"; plistlib.dump(p, open("$(WIDGET_APPEX)/Contents/Info.plist", "wb"))'
+	@set -e; \
+	[ -f "$(KEYCHAIN)" ] && security list-keychains -d user -s "$(KEYCHAIN)" /Library/Keychains/System.keychain 2>/dev/null || true; \
+	for f in $(CONTENTS)/Resources/*.dylib $(CONTENTS)/Resources/idevice_id $(CONTENTS)/Resources/ideviceinfo $(CONTENTS)/Resources/comptest $(CONTENTS)/Resources/bartbeat $(CONTENTS)/Resources/mobilebeat $(CONTENTS)/Resources/wifiwatch; do \
 	  [ -f "$$f" ] && codesign --force --sign "$(SIGN)" $(SIGN_FLAGS) "$$f"; \
 	done; \
+	codesign --force --sign "$(SIGN)" $(SIGN_FLAGS) --entitlements Widgets/BartteryWidget.entitlements $(WIDGET_APPEX); \
 	codesign --force --sign "$(SIGN)" $(SIGN_FLAGS) --entitlements Barttery.entitlements $(BUNDLE)
 	@echo "=> Built $(BUNDLE)"
 
@@ -34,10 +48,18 @@ run: build
 	open $(BUNDLE)
 
 install: build
+	@killall Barttery 2>/dev/null || true
 	rm -rf /Applications/$(BUNDLE)
 	ditto $(BUNDLE) /Applications/$(BUNDLE)
 	xattr -dr com.apple.quarantine /Applications/$(BUNDLE) 2>/dev/null || true
+	@mkdir -p "$$HOME/Library/Containers/me.yura.barttery.widget/Data/Documents" "$$HOME/Library/Containers/me.yura.barttery.widget/Data/Library/Application Support" 2>/dev/null || true
+	@pluginkit -a /Applications/$(BUNDLE)/Contents/PlugIns/BartteryWidget.appex 2>/dev/null || true
+	@pluginkit -e use -i me.yura.barttery.widget 2>/dev/null || true
+	@pluginkit -e use -i com.yura.barttery.widget 2>/dev/null || true
+	@killall chronod 2>/dev/null || true
+	@killall NotificationCenter 2>/dev/null || true
 	@echo "=> Installed to /Applications/$(BUNDLE)"
+	@open /Applications/$(BUNDLE)
 
 # Public, non-widget release. Never replace Developer ID signatures with ad-hoc ones.
 dmg:

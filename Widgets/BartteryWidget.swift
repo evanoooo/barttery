@@ -129,7 +129,15 @@ private struct BatteryTableRow: View {
     private var stale: Bool { device.isStale(at: date) }
     private var tint: Color {
         if stale { return .secondary }
-        return device.level <= 20 && !device.isCharging ? .red : .green
+        if device.level <= 15 && !device.isCharging {
+            return Color(red: 220/255, green: 38/255, blue: 38/255)
+        } else if device.level <= 35 && !device.isCharging {
+            return Color(red: 217/255, green: 119/255, blue: 6/255)
+        } else if device.isPaused {
+            return Color(red: 0/255, green: 113/255, blue: 227/255)
+        } else {
+            return Color(red: 36/255, green: 138/255, blue: 61/255)
+        }
     }
 
     var body: some View {
@@ -171,7 +179,15 @@ private struct BatteryRing: View {
     private var stale: Bool { device.isStale(at: date) }
     private var tint: Color {
         if stale { return .secondary }
-        return device.level <= 20 && !device.isCharging ? .red : .green
+        if device.level <= 15 && !device.isCharging {
+            return Color(red: 220/255, green: 38/255, blue: 38/255)
+        } else if device.level <= 35 && !device.isCharging {
+            return Color(red: 217/255, green: 119/255, blue: 6/255)
+        } else if device.isPaused {
+            return Color(red: 0/255, green: 113/255, blue: 227/255)
+        } else {
+            return Color(red: 36/255, green: 138/255, blue: 61/255)
+        }
     }
 
     var body: some View {

@@ -114,23 +114,169 @@ enum WidgetBatteryLayout: String, CaseIterable {
 enum WidgetSnapshotStore {
     static let appGroup = "group.me.yura.barttery"
     static let widgetKind = "BartteryBatteries"
+    static let widgetBundleId = "me.yura.barttery.widget"
+    static let legacyWidgetBundleId = "com.yura.barttery.widget"
+
+    static var defaultFileURL: URL {
+        var homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        if let pw = getpwuid(getuid()), let pwDir = pw.pointee.pw_dir {
+            homePath = String(cString: pwDir)
+        }
+        let dir = URL(fileURLWithPath: homePath)
+            .appendingPathComponent("Library/Group Containers/\(appGroup)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("battery-snapshot.json")
+    }
 
     static var fileURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?
-            .appendingPathComponent("battery-snapshot.json")
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            return groupURL.appendingPathComponent("battery-snapshot.json")
+        }
+        return defaultFileURL
+    }
+
+    /// All locations where the snapshot can be stored or read.
+    /// Includes the App Group container, the widget's dedicated sandbox container,
+    /// and standard fallback directories.
+    static func candidateURLs() -> [URL] {
+        var urls: [URL] = []
+
+        // 1. App Group container URL (if enabled by provisioning profile)
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            urls.append(groupURL.appendingPathComponent("battery-snapshot.json"))
+        }
+
+        // 2. Process's own document and application support directories
+        // (inside the sandboxed widget extension, these map directly to its container:
+        //  ~/Library/Containers/me.yura.barttery.widget/Data/Documents/)
+        if let docURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            urls.append(docURL.appendingPathComponent("battery-snapshot.json"))
+        }
+        if let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            urls.append(appSupportURL.appendingPathComponent("battery-snapshot.json"))
+        }
+
+        // 3. User's real home directory paths (accessible to the host app)
+        var homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        if let pw = getpwuid(getuid()), let pwDir = pw.pointee.pw_dir {
+            homePath = String(cString: pwDir)
+        }
+
+        for bundleId in [widgetBundleId, legacyWidgetBundleId] {
+            let docsPath = "\(homePath)/Library/Containers/\(bundleId)/Data/Documents/battery-snapshot.json"
+            let appSupportPath = "\(homePath)/Library/Containers/\(bundleId)/Data/Library/Application Support/battery-snapshot.json"
+            urls.append(URL(fileURLWithPath: docsPath))
+            urls.append(URL(fileURLWithPath: appSupportPath))
+        }
+
+        // 4. Default Group Containers folder path
+        let groupPath = "\(homePath)/Library/Group Containers/\(appGroup)/battery-snapshot.json"
+        urls.append(URL(fileURLWithPath: groupPath))
+
+        // Deduplicate while preserving precedence
+        var seen = Set<String>()
+        var result: [URL] = []
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            if !seen.contains(path) {
+                seen.insert(path)
+                result.append(url)
+            }
+        }
+        return result
     }
 
     static func read(from url: URL? = fileURL) -> WidgetBatterySnapshot {
-        guard let url,
-              let data = try? Data(contentsOf: url),
-              let snapshot = try? JSONDecoder().decode(WidgetBatterySnapshot.self, from: data)
-        else { return .empty }
-        return snapshot
+        guard let url else { return .empty }
+        let targets = (url == fileURL) ? candidateURLs() : [url]
+
+        var bestSnapshot: WidgetBatterySnapshot = .empty
+
+        for targetURL in targets {
+            var fileData: Data? = try? Data(contentsOf: targetURL)
+            if fileData == nil {
+                targetURL.withUnsafeFileSystemRepresentation { cPath in
+                    guard let cPath else { return }
+                    if let f = fopen(cPath, "rb") {
+                        defer { fclose(f) }
+                        fseek(f, 0, SEEK_END)
+                        let len = ftell(f)
+                        if len > 0 {
+                            fseek(f, 0, SEEK_SET)
+                            var buf = [UInt8](repeating: 0, count: len)
+                            let readBytes = fread(&buf, 1, len, f)
+                            if readBytes == len {
+                                fileData = Data(buf)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let data = fileData,
+               let snapshot = try? JSONDecoder().decode(WidgetBatterySnapshot.self, from: data) {
+                if !snapshot.devices.isEmpty {
+                    return snapshot
+                }
+                if bestSnapshot.devices.isEmpty {
+                    bestSnapshot = snapshot
+                }
+            }
+        }
+
+        return bestSnapshot
     }
+
+    static var lastFopenErrno: Int32 = 0
 
     static func write(_ snapshot: WidgetBatterySnapshot, to url: URL? = fileURL) throws {
         guard let url else { throw CocoaError(.fileNoSuchFile) }
+        let targets = (url == fileURL) ? candidateURLs() : [url]
+
+        var successfulWrites = 0
+        var firstError: Error?
+
+        for targetURL in targets {
+            do {
+                try writeSingle(snapshot, to: targetURL)
+                successfulWrites += 1
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if successfulWrites == 0, let error = firstError {
+            throw error
+        }
+    }
+
+    private static func writeSingle(_ snapshot: WidgetBatterySnapshot, to url: URL) throws {
         let data = try JSONEncoder().encode(snapshot)
-        try data.write(to: url, options: .atomic)
+        let dir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var written = false
+        lastFopenErrno = 0
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return }
+            if let f = fopen(cPath, "wb") {
+                defer { fclose(f) }
+                data.withUnsafeBytes { ptr in
+                    if let base = ptr.baseAddress {
+                        fwrite(base, 1, data.count, f)
+                    }
+                }
+                written = true
+            } else {
+                lastFopenErrno = errno
+            }
+        }
+        if written { return }
+
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw error
+        }
     }
 }
