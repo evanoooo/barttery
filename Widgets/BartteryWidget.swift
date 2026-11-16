@@ -320,6 +320,19 @@ private struct BatteryRing: View {
         colorScheme == .dark ? Color.white.opacity(0.88) : Color.primary.opacity(0.85)
     }
 
+    private var statusIconColor: Color {
+        if stale { return .secondary }
+        if device.isPaused { return tint }
+        // Native Apple Batteries Widget behavior:
+        // When device reaches 100% and remains connected, bolt is green (matches tint).
+        // While actively drawing power (< 100%), bolt is white in dark mode / primary in light mode.
+        if device.level >= 100 {
+            return tint
+        } else {
+            return colorScheme == .dark ? .white : Color.primary.opacity(0.88)
+        }
+    }
+
     var body: some View {
         VStack(spacing: single ? 11 : 10) {
             ZStack {
@@ -336,31 +349,22 @@ private struct BatteryRing: View {
                     .font(.system(size: size * 0.42, weight: .medium))
                     .foregroundStyle(stale ? Color.secondary : iconColor)
 
-                if compact, let statusSymbol = device.statusSymbol {
+                // 12 o'clock charging / paused indicator placed at the top of the ring
+                if let statusSymbol = device.statusSymbol {
                     Image(systemName: statusSymbol)
                         .font(.system(size: max(8, size * 0.19), weight: .bold))
-                        .foregroundStyle(tint)
-                        .padding(2)
-                        .background(Circle().fill(.ultraThinMaterial))
-                        .offset(y: size * 0.46)
+                        .foregroundStyle(statusIconColor)
+                        .offset(y: -size / 2)
+                        .widgetAccentable()
                 }
             }
             .frame(width: size, height: size)
 
             if !compact {
-                HStack(spacing: 2.5) {
-                    Text("\(device.level)%")
-                        .font(.system(size: single ? 18 : 16, weight: .regular))
-                        .monospacedDigit()
-                        .foregroundStyle(stale ? Color.secondary : labelColor)
-
-                    if let statusSymbol = device.statusSymbol {
-                        Image(systemName: statusSymbol)
-                            .font(.system(size: single ? 13 : 10.5, weight: .bold))
-                            .foregroundStyle(tint)
-                            .widgetAccentable()
-                    }
-                }
+                Text("\(device.level)%")
+                    .font(.system(size: single ? 18 : 16, weight: .regular, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(stale ? Color.secondary : labelColor)
             }
         }
         .frame(maxWidth: .infinity)
