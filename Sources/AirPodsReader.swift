@@ -359,27 +359,32 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             autoreleasepool {
                 guard let obj = cls.perform(selAlloc)?.takeUnretainedValue() as? NSObject,
                       let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject,
-                      let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
-                      let payload = payloads.first as? NSObject else { return }
+                      let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject] else { return }
 
-                parsedByFramework = true
+                for p in payloads {
+                    let pObj = p as AnyObject
+                    let lValid = Self.safeIntProperty(pObj, "leftBatteryValid")
+                    let rValid = Self.safeIntProperty(pObj, "rightBatteryValid")
+                    let cValid = Self.safeIntProperty(pObj, "caseBatteryValid")
+                    guard lValid == 1 || rValid == 1 || cValid == 1 else { continue }
 
-                if let lValid = payload.value(forKey: "leftBatteryValid") as? Int, lValid == 1,
-                   let lLevel = payload.value(forKey: "leftBatteryLevel") as? Int, lLevel >= 0 {
-                    lastLeftBattery = plistLevels?.left ?? min(lLevel, 100)
-                    bleLeftCharging = (payload.value(forKey: "leftBatteryCharging") as? Int == 1)
-                }
-                if let rValid = payload.value(forKey: "rightBatteryValid") as? Int, rValid == 1,
-                   let rLevel = payload.value(forKey: "rightBatteryLevel") as? Int, rLevel >= 0 {
-                    lastRightBattery = plistLevels?.right ?? min(rLevel, 100)
-                    bleRightCharging = (payload.value(forKey: "rightBatteryCharging") as? Int == 1)
-                }
-                if let cValid = payload.value(forKey: "caseBatteryValid") as? Int, cValid == 1,
-                   let cLevel = payload.value(forKey: "caseBatteryLevel") as? Int, cLevel >= 0 {
-                    bleCaseInPacket = true
-                    lastCaseBattery = plistLevels?.cas ?? min(cLevel, 100)
-                    lastCaseSeenDate = now
-                    bleCaseCharging = (payload.value(forKey: "caseBatteryCharging") as? Int == 1)
+                    parsedByFramework = true
+
+                    if lValid == 1, let lLevel = Self.safeIntProperty(pObj, "leftBatteryLevel"), lLevel >= 0 {
+                        lastLeftBattery = plistLevels?.left ?? min(lLevel, 100)
+                        bleLeftCharging = (Self.safeIntProperty(pObj, "leftBatteryCharging") == 1)
+                    }
+                    if rValid == 1, let rLevel = Self.safeIntProperty(pObj, "rightBatteryLevel"), rLevel >= 0 {
+                        lastRightBattery = plistLevels?.right ?? min(rLevel, 100)
+                        bleRightCharging = (Self.safeIntProperty(pObj, "rightBatteryCharging") == 1)
+                    }
+                    if cValid == 1, let cLevel = Self.safeIntProperty(pObj, "caseBatteryLevel"), cLevel >= 0 {
+                        bleCaseInPacket = true
+                        lastCaseBattery = plistLevels?.cas ?? min(cLevel, 100)
+                        lastCaseSeenDate = now
+                        bleCaseCharging = (Self.safeIntProperty(pObj, "caseBatteryCharging") == 1)
+                    }
+                    break
                 }
             }
         }
@@ -517,16 +522,27 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
     // MARK: - Lid closed detection
 
+    private static func safeIntProperty(_ obj: AnyObject, _ selectorName: String) -> Int? {
+        let sel = NSSelectorFromString(selectorName)
+        guard obj.responds(to: sel) else { return nil }
+        guard let method = class_getInstanceMethod(type(of: obj), sel) else { return nil }
+        typealias IntGetter = @convention(c) (AnyObject, Selector) -> CInt
+        let getter = unsafeBitCast(method_getImplementation(method), to: IntGetter.self)
+        return Int(getter(obj, sel))
+    }
+
     private func isLidClosed(_ mfr: Data) -> Bool {
         guard let cls = advClass else { return false }
         return autoreleasepool {
             guard let obj = cls.perform(selAlloc)?.takeUnretainedValue() as? NSObject else { return false }
             guard let adv = obj.perform(selInitData, with: mfr as NSData)?.takeRetainedValue() as? NSObject else { return false }
-            guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject],
-                  let payload = payloads.first else { return false }
-            let pObj = payload as AnyObject
-            guard pObj.responds(to: NSSelectorFromString("lidClosed")) else { return false }
-            return pObj.value(forKey: "lidClosed") as? Int == 1
+            guard let payloads = adv.perform(selPayloads)?.takeUnretainedValue() as? [AnyObject] else { return false }
+            for p in payloads {
+                if let val = Self.safeIntProperty(p as AnyObject, "lidClosed") {
+                    return val == 1
+                }
+            }
+            return false
         }
     }
 
