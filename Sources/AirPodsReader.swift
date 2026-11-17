@@ -60,7 +60,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private var lastCaseCharging: Bool?
     private var lastCaseChargingDate: Date?
     private var caseNonChargingConsecutiveCount: Int = 0
-    private var lastPodCharging: Bool?
+    private var lastLeftCharging: Bool?
+    private var lastRightCharging: Bool?
     private var lastChargingSeenDate: Date?
     private var knownProductID: UInt16?
 
@@ -69,6 +70,17 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     private let selInitData = NSSelectorFromString("initWithData:")
     private let selPayloads = NSSelectorFromString("payloads")
     private var advClass: NSObject.Type?
+    private static var selectorCache: [String: Selector] = [:]
+    private static let selectorLock = NSLock()
+
+    private static func cachedSelector(_ name: String) -> Selector {
+        selectorLock.lock()
+        defer { selectorLock.unlock() }
+        if let sel = selectorCache[name] { return sel }
+        let sel = NSSelectorFromString(name)
+        selectorCache[name] = sel
+        return sel
+    }
 
     private struct PlistLevels {
         let left: Int?
@@ -154,6 +166,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(handleSleep), name: NSWorkspace.willSleepNotification, object: nil)
         center.addObserver(self, selector: #selector(handleWake), name: NSWorkspace.didWakeNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleScreenSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleScreenWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
     }
 
     deinit {
@@ -174,6 +188,16 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         stopScanning()
         syncTimer?.invalidate()
         syncTimer = nil
+    }
+
+    @objc private func handleScreenSleep() {
+        stopScanning()
+    }
+
+    @objc private func handleScreenWake() {
+        if hasPairedAirPods && cachedBTDevice?.isConnected() == true {
+            startScanning(timeout: 10)
+        }
     }
 
     @objc private func handleWake() {
@@ -216,13 +240,15 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
         dutyActive = true
         scanTimeoutWorkItem?.cancel()
         scanTimeoutWorkItem = nil
-        if let timeout {
-            let work = DispatchWorkItem { [weak self] in
-                self?.stopScanningOnBLEQueue()
-            }
-            scanTimeoutWorkItem = work
-            bleQueue.asyncAfter(deadline: .now() + timeout, execute: work)
+        // Default to a 30-second maximum scanning window if no timeout was specified.
+        // This acts as a watchdog to ensure background scanning never runs indefinitely
+        // if SwiftUI .onDisappear is dropped or delayed.
+        let effectiveTimeout = timeout ?? 30
+        let work = DispatchWorkItem { [weak self] in
+            self?.stopScanningOnBLEQueue()
         }
+        scanTimeoutWorkItem = work
+        bleQueue.asyncAfter(deadline: .now() + effectiveTimeout, execute: work)
         guard !isScanning else { return }
         dutyGeneration &+= 1  // invalidates any pending "begin window" from a pause
         beginScanWindow(generation: dutyGeneration)
@@ -437,15 +463,18 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             }
         }
 
-        if let lChg = bleLeftCharging, let rChg = bleRightCharging {
-            let podsChg = lChg || rChg
-            if podsChg {
-                lastPodCharging = true
-                lastChargingSeenDate = now
-            } else if bleCaseInPacket {
-                lastPodCharging = false
-                lastChargingSeenDate = now
-            }
+        if let lChg = bleLeftCharging {
+            lastLeftCharging = lChg
+            lastChargingSeenDate = now
+        }
+        if let rChg = bleRightCharging {
+            lastRightCharging = rChg
+            lastChargingSeenDate = now
+        }
+        if bleCaseInPacket && bleLeftCharging == nil && bleRightCharging == nil {
+            lastLeftCharging = false
+            lastRightCharging = false
+            lastChargingSeenDate = now
         }
 
         if lastCaseCharging == true {
@@ -458,14 +487,16 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 lastCaseCharging = false
             }
         }
-        if lastPodCharging == true {
+        if lastLeftCharging == true || lastRightCharging == true {
             if let seen = lastChargingSeenDate {
                 if now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
-                    lastPodCharging = false
+                    lastLeftCharging = false
+                    lastRightCharging = false
                     lastChargingSeenDate = nil
                 }
             } else {
-                lastPodCharging = false
+                lastLeftCharging = false
+                lastRightCharging = false
             }
         }
 
@@ -475,8 +506,8 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
 
         guard leftBat != nil || rightBat != nil || caseBat != nil else { return }
 
-        let leftCharging  = plistLevels?.leftCharging ?? bleLeftCharging ?? (lastPodCharging ?? false)
-        let rightCharging = plistLevels?.rightCharging ?? bleRightCharging ?? (lastPodCharging ?? false)
+        let leftCharging  = plistLevels?.leftCharging ?? bleLeftCharging ?? (lastLeftCharging ?? false)
+        let rightCharging = plistLevels?.rightCharging ?? bleRightCharging ?? (lastRightCharging ?? false)
         let isPodCharging = leftCharging || rightCharging
 
         let isCaseFull = (caseBat ?? 0) >= 100
@@ -494,23 +525,29 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             lastCaseCharging = false
             lastCaseChargingDate = nil
             caseNonChargingConsecutiveCount = 0
+        } else if let bleCharging = bleCaseCharging {
+            caseCharging = bleCharging
+            lastCaseCharging = bleCharging
+            lastCaseChargingDate = bleCharging ? now : nil
+        } else if let cachedCharging = lastCaseCharging {
+            caseCharging = cachedCharging
         } else if plistCaseFresh {
             let freshChg = plistLevels?.caseCharging ?? false
             caseCharging = freshChg
             lastCaseCharging = freshChg
             lastCaseChargingDate = freshChg ? now : nil
             caseNonChargingConsecutiveCount = 0
-        } else if let bleCharging = lastCaseCharging {
-            caseCharging = bleCharging
         } else {
-            caseCharging = plistLevels?.caseCharging ?? false
+            caseCharging = false
         }
 
         Self.logger.debug("AirPods packet: lidClosed=\(lidClosed) -> L:\(leftBat ?? -1) R:\(rightBat ?? -1) Case:\(caseBat ?? -1) Chg:\(isPodCharging) CaseChg:\(caseCharging)")
 
         let battery = AirPodsBattery(
             left: leftBat, right: rightBat, case: caseBat,
-            leftCharging: leftCharging, rightCharging: rightCharging, caseCharging: caseCharging
+            leftCharging: (leftBat ?? 0) < 100 && leftCharging,
+            rightCharging: (rightBat ?? 0) < 100 && rightCharging,
+            caseCharging: (caseBat ?? 0) < 100 && caseCharging
         )
         guard !battery.isEqual(to: lastBattery) else { return }
 
@@ -523,7 +560,7 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
     // MARK: - Lid closed detection
 
     private static func safeIntProperty(_ obj: AnyObject, _ selectorName: String) -> Int? {
-        let sel = NSSelectorFromString(selectorName)
+        let sel = cachedSelector(selectorName)
         guard obj.responds(to: sel) else { return nil }
         guard let method = class_getInstanceMethod(type(of: obj), sel) else { return nil }
         typealias IntGetter = @convention(c) (AnyObject, Selector) -> CInt
@@ -617,18 +654,21 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
             }
             let caseLevel = levels.cas ?? lastCaseBattery
             let caseChg = (caseLevel ?? 0) < 100 && levels.caseCharging
-            lastCaseCharging = caseChg
-            lastCaseChargingDate = caseChg ? (levels.caseLastSeen ?? levels.lastSeen) : nil
+            if lastCaseCharging != false || levels.caseCharging == false {
+                lastCaseCharging = caseChg
+                lastCaseChargingDate = caseChg ? (levels.caseLastSeen ?? levels.lastSeen) : nil
+            }
             caseNonChargingConsecutiveCount = 0
-            lastPodCharging = levels.leftCharging || levels.rightCharging
+            lastLeftCharging = (levels.left ?? 0) < 100 && levels.leftCharging
+            lastRightCharging = (levels.right ?? 0) < 100 && levels.rightCharging
 
             let battery = AirPodsBattery(
                 left: levels.left ?? lastLeftBattery,
                 right: levels.right ?? lastRightBattery,
                 case: caseLevel,
-                leftCharging: levels.leftCharging,
-                rightCharging: levels.rightCharging,
-                caseCharging: caseChg
+                leftCharging: lastLeftCharging ?? false,
+                rightCharging: lastRightCharging ?? false,
+                caseCharging: (caseLevel ?? 0) < 100 && (lastCaseCharging ?? false)
             )
             if !battery.isEqual(to: lastBattery) {
                 lastBattery = battery
@@ -652,23 +692,25 @@ class AirPodsReader: NSObject, CBCentralManagerDelegate {
                 changed = true
             }
         }
-        if lastPodCharging == true {
+        if lastLeftCharging == true || lastRightCharging == true {
             if let seen = lastChargingSeenDate {
                 if now.timeIntervalSince(seen) > Self.caseChargingStaleTimeout {
-                    lastPodCharging = false
+                    lastLeftCharging = false
+                    lastRightCharging = false
                     lastChargingSeenDate = nil
                     changed = true
                 }
             } else {
-                lastPodCharging = false
+                lastLeftCharging = false
+                lastRightCharging = false
                 changed = true
             }
         }
         guard changed, let current = lastBattery else { return }
         let updated = AirPodsBattery(
             left: current.left, right: current.right, case: current.case,
-            leftCharging: lastPodCharging ?? false,
-            rightCharging: lastPodCharging ?? false,
+            leftCharging: lastLeftCharging ?? false,
+            rightCharging: lastRightCharging ?? false,
             caseCharging: lastCaseCharging ?? false
         )
         if !updated.isEqual(to: current) {

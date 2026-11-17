@@ -68,15 +68,44 @@ class LogitechReader {
         return normalizedNameMap[normalized(name)]
     }
 
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+
     func startMonitoring() {
         timer?.invalidate()
         // Do not request or prompt for Input Monitoring permission.
         // If granted out-of-band by user, read devices via HID++; otherwise keep completely silent.
         readDevices()
-        timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+        setupTimer()
+
+        let center = NSWorkspace.shared.notificationCenter
+        if sleepObserver == nil {
+            sleepObserver = center.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.timer?.invalidate()
+                self?.timer = nil
+            }
+        }
+        if wakeObserver == nil {
+            wakeObserver = center.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setupTimer()
+            }
+        }
+    }
+
+    private func setupTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.readDevices()
         }
-        timer?.tolerance = 30
+        timer?.tolerance = 10
     }
 
     func refresh() {
@@ -124,7 +153,11 @@ class LogitechReader {
         )
     }
 
-    deinit { timer?.invalidate() }
+    deinit {
+        timer?.invalidate()
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+    }
 }
 
 // MARK: - HID++ 2.0 engine

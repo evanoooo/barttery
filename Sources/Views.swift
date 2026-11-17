@@ -692,7 +692,8 @@ struct AirPodsRow: View {
     private var isPro: Bool { name.lowercased().contains("pro") }
 
     private var isCharging: Bool {
-        battery.leftCharging || battery.rightCharging
+        (battery.leftCharging && (battery.left ?? 0) < 100) ||
+        (battery.rightCharging && (battery.right ?? 0) < 100)
     }
 
     private var isLowBattery: Bool {
@@ -802,7 +803,7 @@ struct AirPodsRow: View {
                             Spacer()
 
                             HStack(spacing: 4) {
-                                if battery.caseCharging {
+                                if battery.caseCharging && caseLevel < 100 {
                                     Image(systemName: "bolt.fill")
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundColor(EyeFriendlyColors.charging)
@@ -813,7 +814,7 @@ struct AirPodsRow: View {
                             }
                         }
 
-                        BatteryBar(level: caseLevel, state: battery.caseCharging ? .charging : .discharging)
+                        BatteryBar(level: caseLevel, state: (battery.caseCharging && caseLevel < 100) ? .charging : .discharging)
                     }
                 }
                 .padding(.horizontal, 10)

@@ -24,6 +24,10 @@ class IDeviceReader: NSObject {
     private var wifiwatchUDID: String?
     private var isQueryingWatch = false
     private var isStopped = false
+    private var isSleeping = false
+    private var bartbeatFailures = 0
+    private var mobilebeatFailures = 0
+    private var wifiwatchFailures = 0
     private var staleTimer: Timer?
     private var lastPhoneSuccess: Date?
     private var lastPadSuccess:   Date?
@@ -57,13 +61,18 @@ class IDeviceReader: NSObject {
         }
         if let t = ud.object(forKey: "watch.lastSyncTime") as? Date { lastWatchSuccess = t }
         phoneUDID = ud.string(forKey: "phone.lastUDID")
-        staleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            self?.checkStale()
-        }
-        staleTimer?.tolerance = 3
+        setupStaleTimer()
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(onSleep), name: NSWorkspace.willSleepNotification, object: nil)
         center.addObserver(self, selector: #selector(onWake), name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    private func setupStaleTimer() {
+        staleTimer?.invalidate()
+        staleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.checkStale()
+        }
+        staleTimer?.tolerance = 15
     }
 
     deinit {
@@ -73,29 +82,39 @@ class IDeviceReader: NSObject {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         for proc in [bartbeat, mobilebeat, wifiwatch] {
             if let proc, proc.isRunning {
+                proc.terminationHandler = nil
                 proc.terminate()
             }
         }
     }
 
     @objc private func onSleep() {
+        isSleeping = true
         staleTimer?.invalidate()
         staleTimer = nil
         for proc in [bartbeat, mobilebeat, wifiwatch] {
             if let proc, proc.isRunning {
-                proc.terminate()
+                proc.terminationHandler = nil
+                Self.stopTimedOutHelper(proc, grace: 0.2)
             }
         }
+        bartbeat = nil
+        mobilebeat = nil
+        wifiwatch = nil
     }
 
     @objc private func onWake() {
-        staleTimer?.invalidate()
-        staleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            self?.checkStale()
-        }
-        staleTimer?.tolerance = 3
+        guard !isStopped else { return }
+        isSleeping = false
+        setupStaleTimer()
         lastBartbeatRestart = nil  // bypass cooldown on wake
+        bartbeatFailures = 0
+        mobilebeatFailures = 0
+        wifiwatchFailures = 0
         restartBartbeat()
+        launchMobilebeat()
+        launchWifiwatch()
+        scanNow()
     }
 
     /// Re-query Watch via comptest. Phone/pad come from bartbeat's own poll loop.
@@ -169,10 +188,21 @@ class IDeviceReader: NSObject {
         }
     }
 
+    private static func closePipes(out: Pipe, err: Pipe, inPipe: Pipe) {
+        out.fileHandleForReading.readabilityHandler = nil
+        err.fileHandleForReading.readabilityHandler = nil
+        try? out.fileHandleForReading.close()
+        try? out.fileHandleForWriting.close()
+        try? err.fileHandleForReading.close()
+        try? err.fileHandleForWriting.close()
+        try? inPipe.fileHandleForReading.close()
+        try? inPipe.fileHandleForWriting.close()
+    }
+
     // MARK: - bartbeat process
 
     private func launchBartbeat() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSleeping else { return }
         if let proc = bartbeat, proc.isRunning { return }
         let path = (binDir as NSString).appendingPathComponent("bartbeat")
         guard FileManager.default.fileExists(atPath: path) else { return }
@@ -195,30 +225,34 @@ class IDeviceReader: NSObject {
         attachStderrDrain(to: errPipe)
 
         proc.terminationHandler = { [weak self, weak proc] _ in
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? inPipe.fileHandleForWriting.close()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                guard let self, !self.isStopped else { return }
-                if self.bartbeat == nil || self.bartbeat === proc {
-                    self.launchBartbeat()
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isStopped, !self.isSleeping else { return }
+                self.bartbeatFailures += 1
+                let delay = min(5.0 * pow(1.5, Double(min(self.bartbeatFailures, 8))), 180.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, !self.isStopped, !self.isSleeping else { return }
+                    if self.bartbeat == nil || self.bartbeat === proc {
+                        self.launchBartbeat()
+                    }
                 }
             }
         }
 
         do {
             try proc.run()
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
             bartbeat = proc
         } catch {
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
         }
     }
 
     /// Apple's MobileDevice.framework sees modern CoreDevice/RemotePairing
     /// devices that libimobiledevice cannot discover over Wi-Fi.
     private func launchMobilebeat() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSleeping else { return }
         if let proc = mobilebeat, proc.isRunning { return }
         let path = (binDir as NSString).appendingPathComponent("mobilebeat")
         guard FileManager.default.fileExists(atPath: path) else { return }
@@ -236,29 +270,33 @@ class IDeviceReader: NSObject {
         attachStderrDrain(to: errPipe)
 
         proc.terminationHandler = { [weak self, weak proc] _ in
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? inPipe.fileHandleForWriting.close()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                guard let self, !self.isStopped else { return }
-                if self.mobilebeat == nil || self.mobilebeat === proc {
-                    self.launchMobilebeat()
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isStopped, !self.isSleeping else { return }
+                self.mobilebeatFailures += 1
+                let delay = min(5.0 * pow(1.5, Double(min(self.mobilebeatFailures, 8))), 180.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, !self.isStopped, !self.isSleeping else { return }
+                    if self.mobilebeat == nil || self.mobilebeat === proc {
+                        self.launchMobilebeat()
+                    }
                 }
             }
         }
         do {
             try proc.run()
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
             mobilebeat = proc
         } catch {
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
         }
     }
 
     /// Reads the paired Watch over classic Wi-Fi lockdown, falling back to live
     /// power-source events when the iPhone refuses companion_proxy requests.
     private func launchWifiwatch() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSleeping else { return }
         guard let udid = phoneUDID ?? UserDefaults.standard.string(forKey: "phone.lastUDID"),
               !udid.isEmpty else { return }
 
@@ -286,24 +324,28 @@ class IDeviceReader: NSObject {
         attachStderrDrain(to: errPipe)
 
         proc.terminationHandler = { [weak self, weak proc] _ in
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            try? inPipe.fileHandleForWriting.close()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                guard let self, !self.isStopped else { return }
-                if self.wifiwatch == nil || self.wifiwatch === proc {
-                    self.launchWifiwatch()
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isStopped, !self.isSleeping else { return }
+                self.wifiwatchFailures += 1
+                let delay = min(5.0 * pow(1.5, Double(min(self.wifiwatchFailures, 8))), 180.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, !self.isStopped, !self.isSleeping else { return }
+                    if self.wifiwatch == nil || self.wifiwatch === proc {
+                        self.launchWifiwatch()
+                    }
                 }
             }
         }
 
         do {
             try proc.run()
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
             wifiwatch = proc
             wifiwatchUDID = udid
         } catch {
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
+            Self.closePipes(out: outPipe, err: errPipe, inPipe: inPipe)
         }
     }
 
@@ -330,9 +372,12 @@ class IDeviceReader: NSObject {
         switch type {
 
         case "watch-stream":
+            wifiwatchFailures = 0
             watchChargingState.streamHeartbeat(at: Date())
 
         case "phone":
+            bartbeatFailures = 0
+            mobilebeatFailures = 0
             let level    = json["level"] as? Int
             let charging = json["charging"] as? Bool ?? false
             let name     = json["name"] as? String
@@ -350,6 +395,8 @@ class IDeviceReader: NSObject {
             launchWifiwatch()
 
         case "pad":
+            bartbeatFailures = 0
+            mobilebeatFailures = 0
             let level    = json["level"] as? Int
             let charging = json["charging"] as? Bool ?? false
             let name     = json["name"] as? String
@@ -371,6 +418,7 @@ class IDeviceReader: NSObject {
             }
 
         case "watch":
+            wifiwatchFailures = 0
             guard let level = json["level"] as? Int, (0...100).contains(level) else { return }
             let reportedCharging = json["charging"] as? Bool
             let isPowerEvent = json["source"] as? String == "wifi-power-event"
@@ -389,7 +437,11 @@ class IDeviceReader: NSObject {
             }
 
         case "disconnected":
-            break   // keep showing last known values
+            if let udid = json["udid"] as? String, udid == phoneUDID {
+                lastPhoneSuccess = nil
+                phoneSyncTime = nil
+                onPhoneUpdate?(nil, nil, nil)
+            }
 
         default: break
         }
@@ -413,7 +465,8 @@ class IDeviceReader: NSObject {
             DispatchQueue.main.async { [weak self] in self?.applyWatch(watch) }
             return
         }
-        if let watch = watchChargingState.receive(watch, powerEvent: false, reportedCharging: nil, at: Date()) {
+        if let watch = watchChargingState.receive(watch, powerEvent: watch.chargingKnown,
+                                                  reportedCharging: watch.isCharging, at: Date()) {
             publishWatch(watch)
         }
     }
@@ -563,18 +616,20 @@ class IDeviceReader: NSObject {
 
         do {
             try proc.run()
+            try? out.fileHandleForWriting.close()
             let waitResult = sema.wait(timeout: .now() + timeout)
             if waitResult == .timedOut && proc.isRunning {
                 Self.stopTimedOutHelper(proc)
             }
-            try? out.fileHandleForWriting.close()
             _ = readGroup.wait(timeout: .now() + 1.0)
+            try? out.fileHandleForReading.close()
             lock.lock()
             let res = String(data: outputData, encoding: .utf8) ?? ""
             lock.unlock()
             return res
         } catch {
             try? out.fileHandleForWriting.close()
+            try? out.fileHandleForReading.close()
             return ""
         }
     }

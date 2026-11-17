@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import IOKit
 import IOBluetooth
 
@@ -73,6 +74,8 @@ class AccessoryReader: NSObject {
     private var disconnectNotifications: [String: IOBluetoothUserNotification] = [:]
     private var connectNotification: IOBluetoothUserNotification?
     private var lastKnownAccessories: [String: AccessoryBattery] = [:]
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
 
     deinit {
         timer?.invalidate()
@@ -80,9 +83,12 @@ class AccessoryReader: NSObject {
         connectNotification?.unregister()
         disconnectNotifications.values.forEach { $0.unregister() }
         disconnectNotifications.removeAll()
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     }
 
     func startMonitoring() {
+        timer?.invalidate()
         connectNotification = IOBluetoothDevice.register(
             forConnectNotifications: self,
             selector: #selector(deviceConnected(_:device:))
@@ -102,6 +108,27 @@ class AccessoryReader: NSObject {
             }
         }
         timer?.tolerance = 1
+
+        let center = NSWorkspace.shared.notificationCenter
+        if sleepObserver == nil {
+            sleepObserver = center.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.timer?.invalidate()
+                self?.timer = nil
+            }
+        }
+        if wakeObserver == nil {
+            wakeObserver = center.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.startMonitoring()
+            }
+        }
     }
 
     func readOnce() { read() }
@@ -193,13 +220,14 @@ class AccessoryReader: NSObject {
             let lower = product.lowercased()
             guard AccessoryBattery.isSupportedAccessoryName(lower) else { continue }
 
-            if seen[product] == nil {
-                let devAddr = (props["DeviceAddress"] as? String)?.lowercased() ?? ""
+            let devAddr = (props["DeviceAddress"] as? String)?.lowercased() ?? ""
+            let entryKey = devAddr.isEmpty ? product : devAddr
+            if seen[entryKey] == nil {
                 let displayName = btNames[devAddr] ?? product
                 let flags = props["BatteryStatusFlags"] as? Int ?? 0
                 let charging = (flags & 2) != 0
                 let isAppleDevice = lower.contains("apple") || lower.contains("magic") || lower.contains("beats")
-                seen[product] = AccessoryBattery(name: displayName, level: battery, charging: charging,
+                seen[entryKey] = AccessoryBattery(name: displayName, level: battery, charging: charging,
                                                  isApple: isAppleDevice, updatedAt: Date())
                 if !addr.isEmpty && devAddr == addr { found = true }
             }

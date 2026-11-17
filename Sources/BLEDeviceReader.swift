@@ -21,6 +21,7 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     private var previousLevels:  [UUID: Int]            = [:]
     private var outlierCounts:   [UUID: Int]            = [:]
     private var chargingStates:  [UUID: Bool]           = [:]
+    private var chargingInferredAt: [UUID: Date]        = [:]
     private var measurementDates: [UUID: Date]         = [:]
 
     private static let battService   = CBUUID(string: "180F")
@@ -182,8 +183,13 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         outlierCounts[id] = 0
         // Infer charging from trend: if level rose since the last reading, the device is charging.
         if let prev = previousLevels[id] {
-            if newLevel > prev      { chargingStates[id] = true  }
-            else if newLevel < prev { chargingStates[id] = false }
+            if newLevel > prev {
+                chargingStates[id] = true
+                chargingInferredAt[id] = date
+            } else if newLevel < prev {
+                chargingStates[id] = false
+                chargingInferredAt.removeValue(forKey: id)
+            }
         }
         previousLevels[id] = newLevel
         levels[id] = newLevel
@@ -193,7 +199,12 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     func batteryReading(for id: UUID, name: String) -> AccessoryBattery? {
         guard let level = levels[id] else { return nil }
-        return AccessoryBattery(name: name, level: level, charging: chargingStates[id] ?? false,
+        var isCharging = chargingStates[id] ?? false
+        if isCharging, let inferredAt = chargingInferredAt[id], Date().timeIntervalSince(inferredAt) > 900 {
+            isCharging = false
+            chargingStates[id] = false
+        }
+        return AccessoryBattery(name: name, level: level, charging: isCharging,
                                 updatedAt: measurementDates[id], chargingKnown: false)
     }
 
@@ -209,6 +220,7 @@ class BLEDeviceReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         previousLevels.removeValue(forKey: id)
         outlierCounts.removeValue(forKey: id)
         chargingStates.removeValue(forKey: id)
+        chargingInferredAt.removeValue(forKey: id)
         measurementDates.removeValue(forKey: id)
     }
 

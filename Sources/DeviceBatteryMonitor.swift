@@ -53,6 +53,8 @@ class DeviceBatteryMonitor: ObservableObject {
     private var iconCancellable: AnyCancellable?
     private var wakeObserver:    NSObjectProtocol?
     private var sleepObserver:   NSObjectProtocol?
+    private var screensSleepObserver: NSObjectProtocol?
+    private var screensWakeObserver:  NSObjectProtocol?
     private var lastIconKey:     (level: Int?, state: ChargeState?, showPct: Bool)?
 
     // Separate buckets merged into `accessories` for display.
@@ -89,6 +91,25 @@ class DeviceBatteryMonitor: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             self?.handleSleep()
+        }
+
+        screensSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.onPopupClose()
+            self.handleSleep()
+        }
+
+        screensWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.setupRefreshTimer()
         }
 
         // Timers don't fire during sleep, so Logitech/BLE/BT accessories can sit stale
@@ -141,6 +162,12 @@ class DeviceBatteryMonitor: ObservableObject {
         }
         if let sleepObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
+        }
+        if let screensSleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(screensSleepObserver)
+        }
+        if let screensWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(screensWakeObserver)
         }
     }
 

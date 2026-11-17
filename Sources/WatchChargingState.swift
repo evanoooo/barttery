@@ -28,7 +28,7 @@ struct WatchChargingState {
     private var streamHeartbeatAt: Date?
 
     mutating func streamHeartbeat(at date: Date) {
-        if let previous = streamHeartbeatAt, (0..<45).contains(date.timeIntervalSince(previous)) {
+        if let previous = streamHeartbeatAt, (0..<120).contains(date.timeIntervalSince(previous)) {
             streamHeartbeatAt = date
         } else {
             streamStartedAt = date
@@ -39,7 +39,7 @@ struct WatchChargingState {
     private func charging(at date: Date) -> Bool? {
         if let observation, let started = streamStartedAt, let heartbeat = streamHeartbeatAt,
            observation.observedAt >= started,
-           (0..<45).contains(date.timeIntervalSince(heartbeat)) {
+           (0..<120).contains(date.timeIntervalSince(heartbeat)) {
             // An uninterrupted live subscription preserves a transition state;
             // silence is not a charger-disconnect event.
             return observation.charging

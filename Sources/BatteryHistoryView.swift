@@ -204,28 +204,12 @@ struct BatteryHistoryView: View {
                 .transition(.opacity)
 
                 // Row 3: The Chart (Fixed height 92)
-                switch selectedRange {
-                case .twentyFourHours:
-                    let buckets = historyStore.timelineBuckets(for: selectedDeviceKey)
-                    let spans = historyStore.chargingSpans(for: buckets)
-
-                    BatteryTimelineChart(
-                        buckets: buckets,
-                        chargingSpans: spans,
-                        hoveredBucket: $hoveredBucket
-                    )
-                    .frame(height: 92)
-
-                case .sevenDays:
-                    let buckets = historyStore.sevenDaysTimelineBuckets(for: selectedDeviceKey)
-
-                    BatterySevenDaysLineChart(
-                        buckets: buckets,
-                        referenceDate: Date(),
-                        hoveredBucket: $hoveredBucket
-                    )
-                    .frame(height: 92)
-                }
+                BatteryHistoryChartHostView(
+                    historyStore: historyStore,
+                    selectedRange: selectedRange,
+                    selectedDeviceKey: selectedDeviceKey,
+                    hoveredBucket: $hoveredBucket
+                )
             }
         }
         .padding(.horizontal, 16)
@@ -721,5 +705,37 @@ private struct VerticalTimeMarkersView: View {
             }
         }
         .frame(width: width, height: height)
+    }
+}
+
+private struct BatteryHistoryChartHostView: View {
+    @ObservedObject var historyStore: BatteryHistoryStore
+    let selectedRange: HistoryRange
+    let selectedDeviceKey: String
+    @Binding var hoveredBucket: BatteryTimelineBucket?
+
+    var body: some View {
+        switch selectedRange {
+        case .twentyFourHours:
+            let buckets = historyStore.timelineBuckets(for: selectedDeviceKey)
+            let spans = historyStore.chargingSpans(for: buckets)
+
+            BatteryTimelineChart(
+                buckets: buckets,
+                chargingSpans: spans,
+                hoveredBucket: $hoveredBucket
+            )
+            .frame(height: 92)
+
+        case .sevenDays:
+            let buckets = historyStore.sevenDaysTimelineBuckets(for: selectedDeviceKey)
+
+            BatterySevenDaysLineChart(
+                buckets: buckets,
+                referenceDate: Date(),
+                hoveredBucket: $hoveredBucket
+            )
+            .frame(height: 92)
+        }
     }
 }

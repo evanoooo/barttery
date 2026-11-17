@@ -51,11 +51,26 @@ static void dbg(const char *fmt, ...) {
     pthread_mutex_unlock(&dbg_lock);
 }
 
+static volatile int     g_stop = 0;
+static pthread_mutex_t sleep_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  sleep_cond = PTHREAD_COND_INITIALIZER;
+
 static void sleep_while_alive(volatile int *alive, int seconds) {
-    int steps = seconds * 5;
-    for (int i = 0; i < steps && *alive; i++) {
-        usleep(200000);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += seconds;
+    pthread_mutex_lock(&sleep_lock);
+    while (*alive && !g_stop) {
+        int rc = pthread_cond_timedwait(&sleep_cond, &sleep_lock, &ts);
+        if (rc != 0) break;
     }
+    pthread_mutex_unlock(&sleep_lock);
+}
+
+static void wake_all_sleepers(void) {
+    pthread_mutex_lock(&sleep_lock);
+    pthread_cond_broadcast(&sleep_cond);
+    pthread_mutex_unlock(&sleep_lock);
 }
 
 #include <stdarg.h>  /* for va_list above — must follow stdio.h */
@@ -396,7 +411,6 @@ typedef struct {
 
 static Dev              devs[MAX_DEVS];
 static pthread_mutex_t  devs_lock = PTHREAD_MUTEX_INITIALIZER;
-static volatile int     g_stop = 0;
 
 static void connect_udid(const char *udid, enum idevice_options lookup);
 
@@ -626,8 +640,10 @@ static void on_ev(const usbmuxd_event_t *ev, void *ud) {
             if ((ev->device.conn_type == CONNECTION_TYPE_USB &&
                  devs[i].lookup == IDEVICE_LOOKUP_USBMUX) ||
                 (ev->device.conn_type == CONNECTION_TYPE_NETWORK &&
-                 devs[i].lookup == IDEVICE_LOOKUP_NETWORK))
+                 devs[i].lookup == IDEVICE_LOOKUP_NETWORK)) {
                 devs[i].alive = 0;
+                wake_all_sleepers();
+            }
             break;
         }
         pthread_mutex_unlock(&devs_lock);
@@ -639,7 +655,15 @@ static void on_ev(const usbmuxd_event_t *ev, void *ud) {
 static void *scan_run(void *p) {
     (void)p;
     while (!g_stop) {
-        for (int i = 0; i < POLL_S * 5 && !g_stop; i++) usleep(200000);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += POLL_S;
+        pthread_mutex_lock(&sleep_lock);
+        while (!g_stop) {
+            int rc = pthread_cond_timedwait(&sleep_cond, &sleep_lock, &ts);
+            if (rc != 0) break;
+        }
+        pthread_mutex_unlock(&sleep_lock);
         if (g_stop) break;
 
         /* watchdog: signal stuck threads at >2 min so dev_run exits cleanly;
@@ -719,6 +743,7 @@ int main(void) {
     pthread_mutex_lock(&devs_lock);
     for (int i = 0; i < MAX_DEVS; i++) devs[i].alive = 0;
     pthread_mutex_unlock(&devs_lock);
+    wake_all_sleepers();
 
     usbmuxd_events_unsubscribe(ctx);
     dbg("exiting");

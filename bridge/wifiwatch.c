@@ -26,6 +26,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
@@ -579,7 +580,7 @@ static int read_watch(wifi_state_t *st, const char *udid, const char *ip_overrid
     if (!arr || plist_array_get_size(arr) == 0) {
         dbg("no paired watch in registry");
         plist_free(reg);
-        return -1;
+        return -2;
     }
     plist_t first = plist_array_get_item(arr, 0);
     char *wid = NULL;
@@ -807,9 +808,8 @@ static int stream_watch(wifi_state_t *st, const char *udid, const char *ip_hint,
             unsigned char ch = (unsigned char)chunk[i];
             if (ch == '\n' || ch == 0) {
                 line[used] = 0;
-                int level = overflow ? -1 : watchlog_level(line);
-                if (level >= 0) {
-                    int charging = watchlog_charging(line);
+                int level = -1, charging = -1;
+                if (!overflow && watchlog_parse(line, &level, &charging) >= 0) {
                     /* No Watch UDID/name is available in this event. */
                     printf("{\"type\":\"watch\",\"level\":%d,\"source\":\"wifi-power-event\"", level);
                     if (charging >= 0)
@@ -867,9 +867,14 @@ int main(int argc, char **argv) {
 
         if (once) break;
 
-        for (int i = 0; i < POLL_S; i++) {
-            if (!stdin_alive()) { dbg("parent closed stdin, exiting"); return 0; }
-            sleep(1);
+        struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN | POLLHUP, .revents = 0 };
+        int ret = poll(&pfd, 1, POLL_S * 1000);
+        if (ret > 0) {
+            char tmp[64];
+            if (read(STDIN_FILENO, tmp, sizeof tmp) <= 0) {
+                dbg("parent closed stdin, exiting");
+                return 0;
+            }
         }
     }
 

@@ -183,6 +183,16 @@ enum WidgetSnapshotStore {
         return result
     }()
 
+    private static let primaryWriteURLs: [URL] = {
+        var urls: [URL] = []
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            urls.append(groupURL.appendingPathComponent("battery-snapshot.json"))
+        }
+        let canonicalWidgetDocs = URL(fileURLWithPath: "\(resolvedHomePath)/Library/Containers/\(widgetBundleId)/Data/Documents/battery-snapshot.json")
+        urls.append(canonicalWidgetDocs)
+        return urls
+    }()
+
     static var defaultFileURL: URL { cachedDefaultFileURL }
 
     static var fileURL: URL? { cachedFileURL }
@@ -242,7 +252,7 @@ enum WidgetSnapshotStore {
     static func write(_ snapshot: WidgetBatterySnapshot, to url: URL? = fileURL) throws {
         guard let url else { throw CocoaError(.fileNoSuchFile) }
         let data = try JSONEncoder().encode(snapshot)
-        let targets = (url == fileURL) ? candidateURLs() : [url]
+        let targets = (url == fileURL) ? primaryWriteURLs : [url]
 
         var successfulWrites = 0
         var firstError: Error?

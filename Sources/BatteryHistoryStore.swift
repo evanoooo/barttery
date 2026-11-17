@@ -78,6 +78,7 @@ final class BatteryHistoryStore: ObservableObject {
     private var pendingSaveWork: DispatchWorkItem?
     private let saveQueue = DispatchQueue(label: "me.yura.barttery.history.save", qos: .utility)
     private var isDirty = false
+    private var storageFileExists = false
 
     private static let retentionHours: TimeInterval = 216 // 9 days retention for 7-day view support
     private static let bucketMinutes: Int = 15
@@ -98,6 +99,9 @@ final class BatteryHistoryStore: ObservableObject {
 
     init() {
         loadFromDisk()
+        if let url = storageFileURL, FileManager.default.fileExists(atPath: url.path) {
+            storageFileExists = true
+        }
         pruneAllDevices()
         setupNotifications()
     }
@@ -148,10 +152,14 @@ final class BatteryHistoryStore: ObservableObject {
 
         var list = samplesByDevice[device] ?? []
 
-        // Deduplication: if the last sample was within 60s and has identical level & flags, skip
+        // Deduplication: if level & flags haven't changed, only store a heartbeat every 30 minutes
         if let last = list.last {
             let elapsed = date.timeIntervalSince(last.date)
-            if elapsed < 60 && last.level == newSample.level && last.flags == newSample.flags {
+            if last.level == newSample.level && last.flags == newSample.flags {
+                if elapsed < 1800 {
+                    return
+                }
+            } else if elapsed < 15 {
                 return
             }
         }
@@ -166,7 +174,8 @@ final class BatteryHistoryStore: ObservableObject {
 
         samplesByDevice[device] = list
         isDirty = true
-        if let url = storageFileURL, !FileManager.default.fileExists(atPath: url.path) {
+        if !storageFileExists {
+            storageFileExists = true
             saveToDiskNow()
         } else {
             scheduleDebouncedSave()
@@ -423,8 +432,10 @@ final class BatteryHistoryStore: ObservableObject {
 
     func saveToDiskNow() {
         guard isDirty, let url = storageFileURL else { return }
+        pruneAllDevices()
         let snapshot = samplesByDevice
         isDirty = false
+        storageFileExists = true
         saveQueue.async {
             do {
                 let data = try JSONEncoder().encode(snapshot)

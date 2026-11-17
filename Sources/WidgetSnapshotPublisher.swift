@@ -76,10 +76,10 @@ final class WidgetSnapshotPublisher {
         let snapshot = monitor.widgetSnapshot(at: now)
         let contentChanged = !devicesContentMatches(snapshot.devices, lastWrittenDevices)
         if !force, hasPublishedSnapshot {
-            if !contentChanged && now.timeIntervalSince(lastWrittenAt) < 300 {
+            if !contentChanged {
                 return
             }
-            if contentChanged && now.timeIntervalSince(lastWrittenAt) < Self.minDiskWriteInterval {
+            if now.timeIntervalSince(lastWrittenAt) < Self.minDiskWriteInterval {
                 let remaining = Self.minDiskWriteInterval - now.timeIntervalSince(lastWrittenAt)
                 if pendingPublishWork == nil {
                     let work = DispatchWorkItem { [weak self, weak monitor] in
@@ -127,8 +127,9 @@ final class WidgetSnapshotPublisher {
 
     private func requestReload() {
         guard pendingReload == nil else { return }
-        // Coalesce frequent BLE updates; WidgetKit also applies its own refresh budget.
-        let delay = max(0, 30 - Date().timeIntervalSince(lastReload))
+        // Coalesce frequent BLE updates; WidgetKit strictly throttles daily budgets (~40-70 reloads/day).
+        // Coalescing passive background changes to 120s preserves the daily quota while keeping data fresh.
+        let delay = max(0, 120 - Date().timeIntervalSince(lastReload))
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingReload = nil

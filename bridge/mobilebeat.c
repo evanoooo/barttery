@@ -275,7 +275,22 @@ static void on_stdin_ready(CFFileDescriptorRef f, CFOptionFlags callBackTypes, v
 
 static void on_device(am_device_notification_callback_info *event, void *info) {
     (void)info;
-    if (event->msg != 1 || !event->device) return;
+    if (!event || !event->device) return;
+    if (event->msg == 2) { /* ADN_DETACHED */
+        for (int i = 0; i < MAX_DEVS; i++) {
+            if (devs[i].in_use && devs[i].device == event->device) {
+                char safe_udid[512];
+                json_string(safe_udid, sizeof safe_udid, devs[i].udid);
+                printf("{\"type\":\"disconnected\",\"udid\":\"%s\"}\n", safe_udid);
+                fflush(stdout);
+                AMDeviceRelease(devs[i].device);
+                memset(&devs[i], 0, sizeof devs[i]);
+                break;
+            }
+        }
+        return;
+    }
+    if (event->msg != 1) return;
 
     CFStringRef udid_value = AMDeviceCopyDeviceIdentifier(event->device);
     char udid[256];

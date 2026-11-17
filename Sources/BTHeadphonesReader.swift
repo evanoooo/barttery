@@ -101,6 +101,16 @@ class BTHeadphonesReader: NSObject {
             disconnectNotes.removeValue(forKey: key)?.unregister()
         }
 
+        if activeKeys.isEmpty && timer?.timeInterval != 300 {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+                self?.read()
+            }
+            timer?.tolerance = 60
+        } else if !activeKeys.isEmpty && timer?.timeInterval != 60 {
+            setupTimer()
+        }
+
         if Thread.isMainThread {
             onUpdate?(result)
         } else {
@@ -176,9 +186,9 @@ class BTHeadphonesReader: NSObject {
         for sel in selectors {
             guard obj.responds(to: sel),
                   let method = class_getInstanceMethod(cls, sel) else { continue }
-            let imp = method_getImplementation(method)
             let retTypePtr = method_copyReturnType(method)
             defer { free(retTypePtr) }
+            let imp = method_getImplementation(method)
             let retType = String(cString: retTypePtr)
             switch retType {
             case "B":
@@ -206,9 +216,9 @@ class BTHeadphonesReader: NSObject {
 
     private func callIntSelector(_ obj: AnyObject, _ sel: Selector) -> Int? {
         guard let method = class_getInstanceMethod(type(of: obj), sel) else { return nil }
-        let imp = method_getImplementation(method)
         let retTypePtr = method_copyReturnType(method)
         defer { free(retTypePtr) }
+        let imp = method_getImplementation(method)
         let retType = String(cString: retTypePtr)
         switch retType {
         case "c":
