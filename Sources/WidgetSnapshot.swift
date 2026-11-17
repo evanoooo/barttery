@@ -188,9 +188,18 @@ enum WidgetSnapshotStore {
         if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
             urls.append(groupURL.appendingPathComponent("battery-snapshot.json"))
         }
-        let canonicalWidgetDocs = URL(fileURLWithPath: "\(resolvedHomePath)/Library/Containers/\(widgetBundleId)/Data/Documents/battery-snapshot.json")
-        urls.append(canonicalWidgetDocs)
-        return urls
+        let homePath = resolvedHomePath
+        for bundleId in [widgetBundleId, legacyWidgetBundleId] {
+            let docs = URL(fileURLWithPath: "\(homePath)/Library/Containers/\(bundleId)/Data/Documents/battery-snapshot.json")
+            let appSupport = URL(fileURLWithPath: "\(homePath)/Library/Containers/\(bundleId)/Data/Library/Application Support/battery-snapshot.json")
+            urls.append(docs)
+            urls.append(appSupport)
+        }
+        let groupPath = URL(fileURLWithPath: "\(homePath)/Library/Group Containers/\(appGroup)/battery-snapshot.json")
+        urls.append(groupPath)
+
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.path).inserted }
     }()
 
     static var defaultFileURL: URL { cachedDefaultFileURL }

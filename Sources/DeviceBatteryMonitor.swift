@@ -55,6 +55,7 @@ class DeviceBatteryMonitor: ObservableObject {
     private var sleepObserver:   NSObjectProtocol?
     private var screensSleepObserver: NSObjectProtocol?
     private var screensWakeObserver:  NSObjectProtocol?
+    private var widgetPublisher:      WidgetSnapshotPublisher?
     private var lastIconKey:     (level: Int?, state: ChargeState?, showPct: Bool)?
 
     // Separate buckets merged into `accessories` for display.
@@ -76,6 +77,7 @@ class DeviceBatteryMonitor: ObservableObject {
         setupBLEDevices()
         setupLogitech()
         setupBTHeadphones()
+        widgetPublisher = WidgetSnapshotPublisher(monitor: self)
         iconCancellable = AppSettings.shared.$showPercentageInMenuBar.sink { [weak self] _ in
             DispatchQueue.main.async { self?.rebuildIcon() }
         }
@@ -169,6 +171,7 @@ class DeviceBatteryMonitor: ObservableObject {
         if let screensWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(screensWakeObserver)
         }
+        widgetPublisher = nil
     }
 
     func refresh(userInitiated: Bool = false) {
