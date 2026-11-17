@@ -185,15 +185,24 @@ enum WidgetSnapshotStore {
 
     private static let primaryWriteURLs: [URL] = {
         var urls: [URL] = []
-        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
-            urls.append(groupURL.appendingPathComponent("battery-snapshot.json"))
-        }
         let homePath = resolvedHomePath
+
+        // 1. Host Application Support (globally accessible without sandbox restriction,
+        // and explicitly allowed in BartteryWidget.entitlements temporary-exception)
+        let hostAppSupport = URL(fileURLWithPath: "\(homePath)/Library/Application Support/battery-snapshot.json")
+        urls.append(hostAppSupport)
+
+        // 2. Widget container Documents & Application Support
         for bundleId in [widgetBundleId, legacyWidgetBundleId] {
             let docs = URL(fileURLWithPath: "\(homePath)/Library/Containers/\(bundleId)/Data/Documents/battery-snapshot.json")
             let appSupport = URL(fileURLWithPath: "\(homePath)/Library/Containers/\(bundleId)/Data/Library/Application Support/battery-snapshot.json")
             urls.append(docs)
             urls.append(appSupport)
+        }
+
+        // 3. App Group container URL (if provisioned)
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            urls.append(groupURL.appendingPathComponent("battery-snapshot.json"))
         }
         let groupPath = URL(fileURLWithPath: "\(homePath)/Library/Group Containers/\(appGroup)/battery-snapshot.json")
         urls.append(groupPath)
